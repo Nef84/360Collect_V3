@@ -1894,15 +1894,23 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
   );
 }
 
-function SupervisorWorkspace({ auth, overview, onLogout, onRefresh, onApproveReview, saving, error }) {
+function SupervisorWorkspace({ auth, overview, onLogout, onRefresh, onApproveReview, onApproveReviewBatch, saving, error }) {
   const [showReviewQueue, setShowReviewQueue] = useState(false);
   const [reviewIndex, setReviewIndex] = useState(0);
+  const [reviewPage, setReviewPage] = useState(1);
   const [reviewProgress, setReviewProgress] = useState({});
   if (!overview) {
     return <p className="p-8 text-sm text-slate-500">Cargando equipo supervisado...</p>;
   }
 
   const reviewQueue = overview.review_queue || [];
+  const reviewPageSize = 10;
+  const totalReviewPages = Math.max(1, Math.ceil(reviewQueue.length / reviewPageSize));
+  const currentPage = Math.min(reviewPage, totalReviewPages);
+  const pageStart = (currentPage - 1) * reviewPageSize;
+  const paginatedReviewQueue = reviewQueue.slice(pageStart, pageStart + reviewPageSize);
+  const visibleStart = reviewQueue.length ? pageStart + 1 : 0;
+  const visibleEnd = reviewQueue.length ? Math.min(pageStart + reviewPageSize, reviewQueue.length) : 0;
   const activeReview = reviewQueue[reviewIndex] || null;
   const activeProgress = activeReview ? reviewProgress[activeReview.promise_id] || { reviewing: false, reviewed: false } : { reviewing: false, reviewed: false };
 
@@ -1929,9 +1937,22 @@ function SupervisorWorkspace({ auth, overview, onLogout, onRefresh, onApproveRev
             </div>
             <div className="flex flex-wrap items-center gap-3 bg-[#31485f] px-6 py-4 text-sm font-semibold">
               <button onClick={() => setShowReviewQueue(false)} className="rounded-full bg-white px-4 py-2 text-ink">Volver al panel</button>
-              <button onClick={() => setReviewIndex((current) => Math.max(0, current - 1))} className="rounded-full bg-white/10 px-4 py-2">Anterior</button>
               <button
-                onClick={() => setReviewIndex((current) => Math.min(reviewQueue.length - 1, current + 1))}
+                onClick={() => {
+                  const nextIndex = Math.max(0, reviewIndex - 1);
+                  setReviewIndex(nextIndex);
+                  setReviewPage(Math.floor(nextIndex / reviewPageSize) + 1);
+                }}
+                className="rounded-full bg-white/10 px-4 py-2"
+              >
+                Anterior
+              </button>
+              <button
+                onClick={() => {
+                  const nextIndex = Math.min(reviewQueue.length - 1, reviewIndex + 1);
+                  setReviewIndex(nextIndex);
+                  setReviewPage(Math.floor(nextIndex / reviewPageSize) + 1);
+                }}
                 disabled={!activeProgress.reviewed}
                 className="rounded-full bg-white/10 px-4 py-2 disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -1983,26 +2004,44 @@ function SupervisorWorkspace({ auth, overview, onLogout, onRefresh, onApproveRev
           </section>
 
           <section className="mt-5 rounded-[26px] border border-slate-200 bg-white p-5 shadow-panel">
-            <h2 className="border-b border-orange-200 pb-3 text-2xl font-bold text-ink">Lista de trabajo Revision Supervisor</h2>
-            <div className="mt-5 grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-              <div className="space-y-3">
-                {reviewQueue.map((item, index) => (
+            <h2 className="border-b border-orange-200 pb-3 text-2xl font-bold text-ink">Revision enfocada</h2>
+            <div className="mt-5 grid gap-4 xl:grid-cols-[0.75fr_1.25fr]">
+              <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                <h3 className="text-lg font-semibold text-ink">Navegacion</h3>
+                <div className="mt-4 grid gap-3 text-sm text-slate-700">
+                  <p>La cola se divide en bloques de 10 para que la pantalla no se vuelva pesada.</p>
+                  <p>Caso actual: <span className="font-semibold text-ink">{reviewIndex + 1}</span> de <span className="font-semibold text-ink">{reviewQueue.length}</span></p>
+                  <p>Mostrando: <span className="font-semibold text-ink">{visibleStart}-{visibleEnd}</span> de <span className="font-semibold text-ink">{reviewQueue.length}</span></p>
+                  <p>Pagina: <span className="font-semibold text-ink">{currentPage}</span> de <span className="font-semibold text-ink">{totalReviewPages}</span></p>
+                  <p>Cliente activo: <span className="font-semibold text-ink">{activeReview.client_name}</span></p>
+                  <p>Usa los botones <span className="font-semibold text-ink">Anterior</span> y <span className="font-semibold text-ink">Siguiente</span> del encabezado para recorrer la cola.</p>
+                </div>
+                <div className="mt-5 flex flex-wrap gap-3">
                   <button
-                    key={item.promise_id}
                     type="button"
-                    onClick={() => setReviewIndex(index)}
-                    className={`w-full rounded-2xl border p-4 text-left ${activeReview.promise_id === item.promise_id ? "border-orange-400 bg-orange-50" : "border-slate-200 bg-white"}`}
+                    onClick={() => {
+                      const nextPage = Math.max(1, currentPage - 1);
+                      setReviewPage(nextPage);
+                      setReviewIndex((nextPage - 1) * reviewPageSize);
+                    }}
+                    disabled={currentPage === 1}
+                    className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-ink disabled:opacity-40"
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-semibold text-ink">{item.client_name}</p>
-                        <p className="mt-1 text-sm text-slate-600">{item.account_number} · {item.collector_name}</p>
-                      </div>
-                      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">#{index + 1}</span>
-                    </div>
-                    <p className="mt-2 text-sm text-slate-700">Acordado: {currency(item.agreed_amount)} / Minimo: {currency(item.minimum_amount)}</p>
+                    Pagina anterior
                   </button>
-                ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextPage = Math.min(totalReviewPages, currentPage + 1);
+                      setReviewPage(nextPage);
+                      setReviewIndex((nextPage - 1) * reviewPageSize);
+                    }}
+                    disabled={currentPage === totalReviewPages}
+                    className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-ink disabled:opacity-40"
+                  >
+                    Pagina siguiente
+                  </button>
+                </div>
               </div>
               <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
                 <h3 className="text-lg font-semibold text-ink">Accion sugerida</h3>
@@ -2047,6 +2086,48 @@ function SupervisorWorkspace({ auth, overview, onLogout, onRefresh, onApproveRev
                     className="rounded-2xl bg-emerald-600 px-4 py-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {saving ? "Actualizando..." : "Revisado"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onApproveReviewBatch(
+                        paginatedReviewQueue.map((item) => item.promise_id),
+                        () => {
+                          setReviewProgress((current) => {
+                            const next = { ...current };
+                            paginatedReviewQueue.forEach((item) => {
+                              next[item.promise_id] = { reviewing: true, reviewed: true };
+                            });
+                            return next;
+                          });
+                        }
+                      )
+                    }
+                    disabled={saving || paginatedReviewQueue.length === 0}
+                    className="rounded-2xl bg-ocean px-4 py-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {saving ? "Procesando..." : `Revisar pagina (${paginatedReviewQueue.length})`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onApproveReviewBatch(
+                        reviewQueue.map((item) => item.promise_id),
+                        () => {
+                          setReviewProgress((current) => {
+                            const next = { ...current };
+                            reviewQueue.forEach((item) => {
+                              next[item.promise_id] = { reviewing: true, reviewed: true };
+                            });
+                            return next;
+                          });
+                        }
+                      )
+                    }
+                    disabled={saving || reviewQueue.length === 0}
+                    className="rounded-2xl bg-brand-blue px-4 py-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {saving ? "Procesando..." : `Revisar todos (${reviewQueue.length})`}
                   </button>
                   <p className="text-sm text-slate-600">
                     {activeProgress.reviewed
@@ -2144,6 +2225,7 @@ function SupervisorWorkspace({ auth, overview, onLogout, onRefresh, onApproveRev
             <button
               onClick={() => {
                 setReviewIndex(0);
+                setReviewPage(1);
                 setShowReviewQueue((current) => !current);
               }}
               className="mt-4 rounded-2xl bg-ink px-4 py-3 text-sm font-semibold text-white"
@@ -2171,24 +2253,17 @@ function SupervisorWorkspace({ auth, overview, onLogout, onRefresh, onApproveRev
             {showReviewQueue ? (
               <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-5">
                 <div className="mb-4 flex items-center justify-between">
-                  <h4 className="text-lg font-semibold text-ink">Lista de trabajo Revision Supervisor</h4>
+                  <h4 className="text-lg font-semibold text-ink">Revision supervisor activa</h4>
                   <span className="rounded-full bg-orange-100 px-3 py-1 text-xs font-semibold text-orange-700">{overview.review_queue?.length || 0} casos</span>
                 </div>
-                <div className="space-y-3">
-                  {(overview.review_queue || []).length === 0 ? (
-                    <p className="text-sm text-slate-500">No hay clientes pendientes de revision supervisor.</p>
-                  ) : (
-                    (overview.review_queue || []).map((item) => (
-                      <div key={item.promise_id} className="rounded-2xl border border-slate-200 p-4 text-sm text-slate-700">
-                        <p className="font-semibold text-ink">{item.client_name}</p>
-                        <p className="mt-1">{item.account_number} · Gestor: {item.collector_name}</p>
-                        <p className="mt-1">Monto acordado: <span className="font-semibold text-ink">{currency(item.agreed_amount)}</span></p>
-                        <p className="mt-1">Minimo sugerido: <span className="font-semibold text-ink">{currency(item.minimum_amount)}</span></p>
-                        <p className="mt-1">Fecha compromiso: {new Date(item.scheduled_date).toLocaleDateString("es-SV")}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
+                {(overview.review_queue || []).length === 0 ? (
+                  <p className="text-sm text-slate-500">No hay clientes pendientes de revision supervisor.</p>
+                ) : (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                    <p>La lista detallada se muestra solo en modo enfocado, un cliente a la vez.</p>
+                    <p className="mt-1">Desde aquí solo se mantiene el acceso al botón para entrar a revisión sin cargar la cola completa abajo.</p>
+                  </div>
+                )}
               </div>
             ) : null}
           </section>
@@ -3868,6 +3943,28 @@ export default function App() {
     }
   };
 
+  const approveSupervisorReviewBatch = async (promiseIds, onDone) => {
+    const uniqueIds = Array.from(new Set((promiseIds || []).filter(Boolean)));
+    if (!uniqueIds.length) return;
+    setSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      for (const promiseId of uniqueIds) {
+        await apiFetch(`/supervisor/reviews/${promiseId}/approve`, auth.token, {
+          method: "POST"
+        });
+      }
+      setSuccess(`${uniqueIds.length} casos revisados. Las promesas quedaron en estado PENDIENTE.`);
+      if (onDone) onDone();
+      await refreshCurrentRole();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (!auth) {
     return <LoginForm onLogin={handleLogin} loading={loading} error={error} />;
   }
@@ -3896,6 +3993,7 @@ export default function App() {
         onLogout={handleLogout}
         onRefresh={refreshCurrentRole}
         onApproveReview={approveSupervisorReview}
+        onApproveReviewBatch={approveSupervisorReviewBatch}
         saving={saving}
         error={error}
       />

@@ -294,6 +294,7 @@ En la carpeta `docs/` encontrarás:
 - `02_Manual_Collector.pdf` — Manual del gestor de cobranza
 - `03_Manual_Supervisor.pdf` — Manual del supervisor
 - `04_Manual_Administrador.pdf` — Manual completo del administrador
+- `05_Resumen_Ejecutivo_360Collect_V3.md` — Documento ejecutivo para comité y presentación comercial
 
 ---
 
