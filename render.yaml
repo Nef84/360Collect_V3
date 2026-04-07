@@ -1,0 +1,51 @@
+databases:
+  - name: db-360collect
+    plan: free
+    databaseName: collectplus
+    user: collectplus
+
+services:
+  - name: api-360collect
+    type: web
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    autoDeployTrigger: commit
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: db-360collect
+          property: connectionString
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: JWT_REFRESH_SECRET_KEY
+        generateValue: true
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_EXPIRE_MINUTES
+        value: "15"
+      - key: JWT_REFRESH_EXPIRE_DAYS
+        value: "7"
+      - key: CORS_ORIGINS
+        value: https://app-360collect.onrender.com,http://localhost:5173,http://127.0.0.1:5173
+
+  - name: app-360collect
+    type: web
+    runtime: static
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && VITE_API_URL=https://$BACKEND_HOST npm run build
+    staticPublishPath: dist
+    autoDeployTrigger: commit
+    envVars:
+      - key: BACKEND_HOST
+        fromService:
+          type: web
+          name: api-360collect
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

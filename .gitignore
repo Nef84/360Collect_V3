@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.env
+.venv
+venv/
+ENV/
+*.log
+
+# Alembic
+backend/migrations/versions/*.pyc
+
+# XGBoost model artifacts
+backend/*.pkl
+backend/*.model
+backend/models/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vs/
+.idea/
+*.suo
+*.user
+*.sln.docstates
+.vscode/
+
+# Docker
+.docker/
+
+# Compiled binaries
+Launcher/bin/
+Launcher/obj/
+
+# Secrets – never commit
+.env
+*.pem
+*.key
