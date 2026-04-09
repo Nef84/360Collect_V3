@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Generator
 
 from sqlalchemy import create_engine
@@ -9,6 +10,13 @@ from config import settings
 
 engine = create_engine(settings.database_url, future=True, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+readonly_engine = create_engine(
+    settings.database_url,
+    future=True,
+    pool_pre_ping=True,
+    pool_size=1,
+    max_overflow=0,
+)
 
 
 class Base(DeclarativeBase):
@@ -21,3 +29,12 @@ def get_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
+
+
+@contextmanager
+def get_readonly_connection():
+    connection = readonly_engine.connect()
+    try:
+        yield connection
+    finally:
+        connection.close()
