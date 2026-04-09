@@ -3,11 +3,14 @@ from __future__ import annotations
 import io
 import json
 import re
+import unicodedata
 import zipfile
 import csv
 import base64
+from pathlib import Path
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from typing import Generator, Optional
+from typing import Any, Generator, Optional
 from uuid import uuid4
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -26,7 +29,7 @@ from sqlalchemy.orm import Session
 
 # ── Local modules ─────────────────────────────────────────────────────────────
 from config import settings, COLLECTOR_DAILY_WORKLIST_LIMIT, PLACEMENT_SEQUENCE, PLACEMENT_EXTERNAL_SUFFIX, EXTERNAL_AGENCY_SLOTS, INTERNAL_WORKLIST_SLOTS
-from database import engine, SessionLocal, get_db
+from database import Base, engine, SessionLocal, get_db, get_readonly_connection
 from models import (
     Usuario, Cliente, Cuenta, Pago, PrediccionIA, Promesa,
     History, Strategy, WorklistAssignment, AssignmentHistory, WhatsAppBotSession,
@@ -39,18 +42,23 @@ from schemas import (
     PagoCreate, PagoRead,
     PredictionResponse,
     CollectorPortfolioResponse, CollectorMetrics, CollectorClientRead,
-    CollectorAccountRead, CollectorManagementCreate, DemographicUpdate,
+    CollectorAccountRead, CollectorManagementCreate, DemographicUpdate, DemographicProfileRead,
+    DemographicPhoneItem, DemographicEmailItem, DemographicAddressItem,
     PromiseRead, ManagementHistoryRead,
     SupervisorOverviewResponse, SupervisorCollectorMetric,
     StrategyCreate, StrategyRead,
-    WorklistAssignRequest,
+    WorklistAssignRequest, WorklistGroupRead, WorklistGroupAssignRequest, WorklistGroupUnassignRequest,
     AdminOverviewResponse, AssignmentHistoryRead,
+    SupervisorCollectorAssignRequest, SupervisorCollectorAssignmentRead,
     AdminDocumentProposalResponse, AdminDocumentProposalUpdate,
     AdminImportProposalResponse,
     AdminGeneratedReportRequest, AdminGeneratedReportResponse,
-    AdminDailySimulationRequest, AdminDailySimulationResponse,
+    AdminDailySimulationRequest, AdminDailySimulationResponse, AdminDailySimulationPreviewResponse,
+    RecoveryVintageOverviewResponse, RecoveryVintagePlacementRead, RecoveryVintageClientRead, RecoveryVintageAgencyRead, RecoveryVintageCompareResponse, RecoveryVintageCompareItem,
     AdminOmnichannelConfigUpdate, AdminWhatsAppDemoSendRequest,
-    AdminEmailDemoRequest, AdminSMSDemoRequest, AdminCallbotDemoRequest,
+    AdminEmailDemoRequest, AdminSMSDemoRequest, AdminCallbotDemoRequest, AdminOmnichannelPreviewResponse,
+    AdminAssistantRequest, AdminAssistantResponse,
+    AdminSqlQueryRequest, AdminSqlQueryResponse, AdminHistoryEventRead,
 )
 from omnichannel_channels import (
     build_collection_email_html, send_email_resend, send_email_smtp,
@@ -71,11 +79,73 @@ from fastapi.security import OAuth2PasswordRequestForm
 ADMIN_DOCUMENT_PROPOSALS: dict[str, dict] = {}
 ADMIN_IMPORT_PROPOSALS: dict[str, dict] = {}
 ADMIN_USER_IMPORT_PROPOSALS: dict[str, dict] = {}
+RECOVERY_VINTAGE_START_YEAR = 2000
+
+
+def resolve_init_sql_path() -> Optional[Path]:
+    candidates = [
+        Path(__file__).resolve().parent.parent / "database" / "init.sql",
+        Path(__file__).resolve().parent / "database" / "init.sql",
+        Path.cwd() / "database" / "init.sql",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def seed_database_from_init_sql_if_empty() -> None:
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        user_count = connection.execute(text("SELECT COUNT(*) FROM usuarios")).scalar() or 0
+        if int(user_count) > 0:
+            return
+
+    init_sql_path = resolve_init_sql_path()
+    if not init_sql_path:
+        raise RuntimeError("No se encontró database/init.sql para sembrar la base de datos inicial.")
+
+    script = init_sql_path.read_text(encoding="utf-8")
+    raw_connection = engine.raw_connection()
+    try:
+        cursor = raw_connection.cursor()
+        cursor.execute(script)
+        raw_connection.commit()
+    finally:
+        raw_connection.close()
 
 
 
 def ensure_runtime_schema() -> None:
     ddl = """
+    DO $$
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'clientes' AND column_name = 'codigo_cliente'
+        ) AND NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'clientes' AND column_name = 'identity_code'
+        ) THEN
+            ALTER TABLE clientes RENAME COLUMN codigo_cliente TO identity_code;
+        END IF;
+    END $$;
+    ALTER TABLE clientes ADD COLUMN IF NOT EXISTS identity_code VARCHAR(30);
+    UPDATE clientes
+    SET identity_code = LPAD(REGEXP_REPLACE(COALESCE(identity_code, ''), '\D', '', 'g'), 11, '0')
+    WHERE identity_code IS NULL
+       OR BTRIM(identity_code) = ''
+       OR identity_code !~ '^\d{11}$';
+    ALTER TABLE clientes ALTER COLUMN identity_code SET NOT NULL;
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'clientes_identity_code_key'
+        ) THEN
+            ALTER TABLE clientes ADD CONSTRAINT clientes_identity_code_key UNIQUE (identity_code);
+        END IF;
+    END $$;
+    CREATE INDEX IF NOT EXISTS ix_clientes_identity_code ON clientes(identity_code);
     CREATE TABLE IF NOT EXISTS assignment_history (
         id SERIAL PRIMARY KEY,
         cliente_id INTEGER NOT NULL REFERENCES clientes(id),
@@ -102,6 +172,66 @@ def ensure_runtime_schema() -> None:
     CREATE INDEX IF NOT EXISTS ix_assignment_history_cliente_id ON assignment_history(cliente_id);
     CREATE INDEX IF NOT EXISTS ix_assignment_history_strategy_code ON assignment_history(strategy_code);
     CREATE INDEX IF NOT EXISTS ix_assignment_history_group_id ON assignment_history(group_id);
+    ALTER TABLE cuentas ADD COLUMN IF NOT EXISTS fecha_separacion DATE;
+    CREATE INDEX IF NOT EXISTS ix_cuentas_fecha_separacion ON cuentas(fecha_separacion);
+    UPDATE cuentas
+    SET fecha_separacion = DATE '2025-01-01' + ((id - 1) % 365)
+    WHERE fecha_separacion IS NULL
+      AND estado IN ('LIQUIDADO', 'Z');
+    DO $$
+    DECLARE
+        recovery_accounts INTEGER;
+        distinct_vintage_years INTEGER;
+        span_days INTEGER;
+        end_date DATE;
+    BEGIN
+        SELECT COUNT(*), COUNT(DISTINCT EXTRACT(YEAR FROM fecha_separacion))
+        INTO recovery_accounts, distinct_vintage_years
+        FROM cuentas
+        WHERE estado IN ('LIQUIDADO', 'Z');
+
+        end_date := (DATE_TRUNC('year', CURRENT_DATE) + INTERVAL '1 year' - INTERVAL '1 day')::date;
+        span_days := end_date - DATE '2000-01-01';
+
+        IF recovery_accounts > 0 AND distinct_vintage_years <= 1 THEN
+            UPDATE cuentas
+            SET fecha_separacion = DATE '2000-01-01' + (((id * 17) % GREATEST(span_days, 365)))
+            WHERE estado IN ('LIQUIDADO', 'Z');
+        END IF;
+    END $$;
+    CREATE TABLE IF NOT EXISTS supervisor_assignments (
+        id SERIAL PRIMARY KEY,
+        supervisor_id INTEGER NOT NULL REFERENCES usuarios(id),
+        collector_id INTEGER NOT NULL REFERENCES usuarios(id),
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(supervisor_id, collector_id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_supervisor_assignments_supervisor_id ON supervisor_assignments(supervisor_id);
+    CREATE INDEX IF NOT EXISTS ix_supervisor_assignments_collector_id ON supervisor_assignments(collector_id);
+    CREATE TABLE IF NOT EXISTS client_contact_points (
+        id SERIAL PRIMARY KEY,
+        cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+        contact_kind VARCHAR(20) NOT NULL,
+        phone_type VARCHAR(20),
+        value TEXT NOT NULL,
+        is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+        activa BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS ix_client_contact_points_cliente_id ON client_contact_points(cliente_id);
+    CREATE INDEX IF NOT EXISTS ix_client_contact_points_kind ON client_contact_points(contact_kind);
+    CREATE TABLE IF NOT EXISTS client_addresses (
+        id SERIAL PRIMARY KEY,
+        cliente_id INTEGER NOT NULL REFERENCES clientes(id),
+        address_type VARCHAR(20),
+        value TEXT NOT NULL,
+        is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+        activa BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS ix_client_addresses_cliente_id ON client_addresses(cliente_id);
     CREATE TABLE IF NOT EXISTS whatsapp_bot_sessions (
         id SERIAL PRIMARY KEY,
         phone_number VARCHAR(30) NOT NULL,
@@ -190,8 +320,69 @@ def ensure_runtime_schema() -> None:
     WHERE NOT EXISTS (SELECT 1 FROM omnichannel_settings WHERE id = 1);
     """
     with engine.begin() as connection:
-        for statement in [part.strip() for part in ddl.split(";") if part.strip()]:
-            connection.execute(text(statement))
+        raw_connection = connection.connection
+        cursor = raw_connection.cursor()
+        try:
+            cursor.execute(ddl)
+        finally:
+            cursor.close()
+    rebalance_recovery_vintage_assignments()
+
+
+def target_recovery_placement_for_vintage(separation_date: Optional[date], seed_value: int) -> str:
+    if not separation_date:
+        return "V11"
+    age_years = max(0, date.today().year - separation_date.year)
+    bucket = abs(seed_value) % 10
+    if age_years <= 1:
+        return "V11" if bucket < 8 else "V12"
+    if age_years <= 3:
+        return "V12" if bucket < 6 else ("V11" if bucket < 8 else "V13")
+    if age_years <= 6:
+        return "V13" if bucket < 6 else ("V12" if bucket < 8 else "V16")
+    if age_years <= 10:
+        return "V16" if bucket < 6 else ("V13" if bucket < 8 else "V18")
+    return "V18" if bucket < 7 else "V16"
+
+
+def rebalance_recovery_vintage_assignments() -> None:
+    db = SessionLocal()
+    try:
+        current_histories = (
+            db.query(AssignmentHistory, Cuenta)
+            .join(Cuenta, Cuenta.cliente_id == AssignmentHistory.cliente_id)
+            .filter(
+                AssignmentHistory.strategy_code == "VAGENCIASEXTERNASINTERNO",
+                AssignmentHistory.is_current.is_(True),
+                Cuenta.fecha_separacion.isnot(None),
+            )
+            .order_by(AssignmentHistory.id.asc(), Cuenta.id.asc())
+            .all()
+        )
+        processed_clients: set[int] = set()
+        changed = False
+        for history, account in current_histories:
+            if history.cliente_id in processed_clients:
+                continue
+            processed_clients.add(history.cliente_id)
+            target_placement = target_recovery_placement_for_vintage(account.fecha_separacion, history.cliente_id)
+            current_scope = history.channel_scope or "EXTERNO"
+            if current_scope == "EXTERNO":
+                slot = EXTERNAL_AGENCY_SLOTS[history.cliente_id % len(EXTERNAL_AGENCY_SLOTS)]
+                target_group = format_external_group_id(target_placement, slot)
+            else:
+                slot = INTERNAL_WORKLIST_SLOTS[history.cliente_id % len(INTERNAL_WORKLIST_SLOTS)]
+                target_group = format_internal_group_id(target_placement, slot)
+            if history.placement_code != target_placement or history.group_id != target_group:
+                history.placement_code = target_placement
+                history.group_id = target_group
+                changed = True
+        if changed:
+            db.commit()
+        else:
+            db.rollback()
+    finally:
+        db.close()
 
 
 def backfill_assignment_history() -> None:
@@ -312,11 +503,12 @@ def build_admin_omnichannel_overview(db: Session) -> dict:
         .count()
     )
     rulebook = [
-        {"strategy": "AL_DIA / PREVENTIVO", "primary_channel": "Chatbot WhatsApp + correo", "goal": "Recordatorio preventivo y link de pago."},
+        {"strategy": "AL_DIA", "primary_channel": "Monitoreo sin contacto", "goal": "Seguimiento silencioso sin tocar al cliente."},
+        {"strategy": "PREVENTIVO", "primary_channel": "Chatbot WhatsApp + correo", "goal": "Recordatorio preventivo y link de pago."},
         {"strategy": "FMORA1 / MMORA2", "primary_channel": "Chatbot WhatsApp + SMS", "goal": "Contención temprana y promesa corta."},
         {"strategy": "HMORA3 / AMORA4", "primary_channel": "Llamada + WhatsApp asistido", "goal": "Negociación humana y seguimiento cercano."},
         {"strategy": "BMORA5 / CMORA6 / DMORA7", "primary_channel": "Callbot + llamada humana", "goal": "Gestión intensiva con cierre o escalamiento."},
-        {"strategy": "VAGENCIASEXTERNASINTERNO", "primary_channel": "Callbot + barrido digital", "goal": "Precalificación y ruteo entre interno y externo."},
+        {"strategy": "VAGENCIASEXTERNASINTERNO", "primary_channel": "Callbot + llamada humana + WhatsApp", "goal": "Recovery con placements, agencias y ruteo operativo."},
     ]
     flags = [
         settings_row["whatsapp_bot_enabled"],
@@ -396,6 +588,64 @@ def build_admin_omnichannel_overview(db: Session) -> dict:
         },
         "journeys": rulebook,
     }
+
+
+def build_admin_alerts(
+    db: Session,
+    *,
+    total_clients: int,
+    assigned_clients: int,
+    omnichannel_overview: dict,
+) -> list[dict[str, Any]]:
+    alerts: list[dict[str, Any]] = []
+    unassigned_clients = max(0, total_clients - assigned_clients)
+    if unassigned_clients > 0:
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": "Clientes sin asignar",
+                "detail": f"Hay {unassigned_clients} clientes sin cartera visible. Conviene asignarlos para no perder cobertura operativa.",
+                "module": "assignments",
+            }
+        )
+
+    readiness_score = int(omnichannel_overview.get("readiness_score") or 0)
+    if readiness_score < 100:
+        alerts.append(
+            {
+                "severity": "info",
+                "title": "Omnicanalidad incompleta",
+                "detail": f"El readiness actual es {readiness_score}%. Aún quedan integraciones o canales por activar.",
+                "module": "omnichannel",
+            }
+        )
+
+    pending_supervisor_reviews = db.query(Promesa).filter(Promesa.estado == "REVISION_SUPERVISOR").count()
+    if pending_supervisor_reviews > 0:
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": "Revisiones supervisor pendientes",
+                "detail": f"Hay {pending_supervisor_reviews} acuerdos fuera de política esperando revisión.",
+                "module": "summary",
+            }
+        )
+
+    callbacks_today = db.query(History).filter(
+        History.accion == "CALLBACK_PROGRAMADO",
+        func.date(History.created_at) == date.today(),
+    ).count()
+    if callbacks_today > 25:
+        alerts.append(
+            {
+                "severity": "info",
+                "title": "Alta carga de callbacks",
+                "detail": f"Se detectaron {callbacks_today} callbacks programados hoy. Revisa capacidad operativa del equipo.",
+                "module": "collector_preview",
+            }
+        )
+
+    return alerts
 
 
 def normalize_whatsapp_phone(raw_phone: str) -> str:
@@ -794,7 +1044,7 @@ class UserRead(UserBase):
 
 
 class ClienteBase(BaseModel):
-    codigo_cliente: str
+    identity_code: str
     nombres: str
     apellidos: str
     dui: str
@@ -835,6 +1085,7 @@ class CuentaBase(BaseModel):
     dias_mora: int = 0
     bucket_actual: str = "0-30"
     estado: str = "ACTIVA"
+    fecha_separacion: Optional[date] = None
     tasa_interes: float = 0
     es_estrafinanciamiento: bool = False
 
@@ -927,8 +1178,7 @@ class ManagementHistoryRead(BaseModel):
 
 class CollectorClientRead(BaseModel):
     id: int
-    codigo_cliente: str
-    identity_code: Optional[str] = None
+    identity_code: str
     dui: Optional[str] = None
     nombres: str
     apellidos: str
@@ -1091,6 +1341,7 @@ class AdminGeneratedReportResponse(BaseModel):
 class AdminDailySimulationRequest(BaseModel):
     fmora1_clients: int = Field(default=250, ge=0, le=5000)
     preventivo_clients: int = Field(default=120, ge=0, le=5000)
+    recovery_clients: int = Field(default=1000, ge=0, le=5000)
 
 
 class AdminDailySimulationResponse(BaseModel):
@@ -1098,6 +1349,10 @@ class AdminDailySimulationResponse(BaseModel):
     aged_accounts: int
     inserted_fmora1_clients: int
     inserted_preventivo_clients: int
+    inserted_recovery_clients: int
+    simulated_payments: int
+    fully_cured_accounts: int
+    recovery_rotations: int
     total_clients: int
     total_accounts: int
     message: str
@@ -1115,6 +1370,17 @@ class AdminOmnichannelConfigUpdate(BaseModel):
     twilio_auth_token: Optional[str] = None
     twilio_whatsapp_from: Optional[str] = None
     twilio_demo_phone: Optional[str] = None
+    twilio_sms_from: Optional[str] = None
+    twilio_voice_from: Optional[str] = None
+    callbot_webhook_url: Optional[str] = None
+    resend_api_key: Optional[str] = None
+    email_from: Optional[str] = None
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = 587
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
+    sms_provider: Optional[str] = "textbelt"
+    textbelt_api_key: Optional[str] = "textbelt"
     notes: Optional[str] = None
 
 
@@ -1165,10 +1431,40 @@ class CollectorManagementCreate(BaseModel):
     callback_at: Optional[datetime] = None
 
 
+class DemographicPhoneItem(BaseModel):
+    id: Optional[int] = None
+    phone_type: str = Field(default="CEL", min_length=3, max_length=20)
+    value: str = Field(..., min_length=3, max_length=40)
+    is_primary: bool = False
+
+
+class DemographicEmailItem(BaseModel):
+    id: Optional[int] = None
+    value: str = Field(..., min_length=5, max_length=180)
+    is_primary: bool = False
+
+
+class DemographicAddressItem(BaseModel):
+    id: Optional[int] = None
+    address_type: str = Field(default="CASA", min_length=3, max_length=20)
+    value: str = Field(..., min_length=5, max_length=500)
+    is_primary: bool = False
+
+
 class DemographicUpdate(BaseModel):
     telefono: Optional[str] = None
     email: Optional[str] = None
     direccion: Optional[str] = None
+    phones: list[DemographicPhoneItem] = Field(default_factory=list)
+    emails: list[DemographicEmailItem] = Field(default_factory=list)
+    addresses: list[DemographicAddressItem] = Field(default_factory=list)
+
+
+class DemographicProfileRead(BaseModel):
+    cliente_id: int
+    phones: list[DemographicPhoneItem] = Field(default_factory=list)
+    emails: list[DemographicEmailItem] = Field(default_factory=list)
+    addresses: list[DemographicAddressItem] = Field(default_factory=list)
 
 
 class TokenResponse(BaseModel):
@@ -1190,7 +1486,31 @@ def get_supervisors(db: Session) -> list[Usuario]:
     return db.query(Usuario).filter(Usuario.rol == "Supervisor", Usuario.activo.is_(True)).order_by(Usuario.id).all()
 
 
+def get_explicit_collectors_for_supervisor(db: Session, supervisor_id: int) -> list[Usuario]:
+    rows = db.execute(
+        text(
+            """
+            SELECT u.*
+            FROM supervisor_assignments sa
+            JOIN usuarios u ON u.id = sa.collector_id
+            WHERE sa.supervisor_id = :supervisor_id
+              AND u.rol = 'Collector'
+              AND u.activo = TRUE
+            ORDER BY u.id
+            """
+        ),
+        {"supervisor_id": supervisor_id},
+    ).mappings().all()
+    if not rows:
+        return []
+    return [db.get(Usuario, row["id"]) for row in rows if db.get(Usuario, row["id"])]
+
+
 def get_collectors_for_supervisor(db: Session, supervisor: Usuario) -> list[Usuario]:
+    explicit_collectors = get_explicit_collectors_for_supervisor(db, supervisor.id)
+    if explicit_collectors:
+        return explicit_collectors
+
     supervisors = get_supervisors(db)
     collectors = get_collectors(db)
     if not supervisors or not collectors:
@@ -1199,6 +1519,308 @@ def get_collectors_for_supervisor(db: Session, supervisor: Usuario) -> list[Usua
     supervisor_ids = [item.id for item in supervisors]
     supervisor_index = supervisor_ids.index(supervisor.id)
     return [collector for index, collector in enumerate(collectors) if index % len(supervisors) == supervisor_index]
+
+
+def format_worklist_group_display(strategy_code: Optional[str], placement_code: Optional[str], group_id: Optional[str]) -> str:
+    if placement_code and group_id:
+        return f"{strategy_code or 'SIN_ESTRATEGIA'} · {placement_code} · {group_id}"
+    if group_id:
+        return f"{strategy_code or 'SIN_ESTRATEGIA'} · {group_id}"
+    return strategy_code or "SIN_GRUPO"
+
+
+def get_worklist_groups_for_user(db: Session, user_id: int) -> list[WorklistGroupRead]:
+    rows = db.execute(
+        text(
+            """
+            SELECT
+                ah.strategy_code,
+                ah.placement_code,
+                ah.group_id,
+                ah.channel_scope,
+                COUNT(DISTINCT a.cliente_id) AS client_count
+            FROM asignaciones_cartera a
+            JOIN assignment_history ah
+              ON ah.cliente_id = a.cliente_id
+             AND ah.usuario_id = a.usuario_id
+             AND ah.is_current = TRUE
+            WHERE a.usuario_id = :user_id
+              AND a.activa = TRUE
+            GROUP BY ah.strategy_code, ah.placement_code, ah.group_id, ah.channel_scope
+            ORDER BY ah.strategy_code, ah.placement_code, ah.group_id
+            """
+        ),
+        {"user_id": user_id},
+    ).mappings().all()
+    return [
+        WorklistGroupRead(
+            strategy_code=row["strategy_code"],
+            placement_code=row["placement_code"],
+            group_id=row["group_id"],
+            channel_scope=row["channel_scope"],
+            client_count=int(row["client_count"] or 0),
+            display_name=format_worklist_group_display(row["strategy_code"], row["placement_code"], row["group_id"]),
+        )
+        for row in rows
+    ]
+
+
+def get_worklist_group_catalog(db: Session) -> list[WorklistGroupRead]:
+    rows = db.execute(
+        text(
+            """
+            SELECT
+                ah.strategy_code,
+                ah.placement_code,
+                ah.group_id,
+                ah.channel_scope,
+                COUNT(DISTINCT ah.cliente_id) AS client_count
+            FROM assignment_history ah
+            WHERE ah.is_current = TRUE
+              AND ah.group_id IS NOT NULL
+            GROUP BY ah.strategy_code, ah.placement_code, ah.group_id, ah.channel_scope
+            ORDER BY ah.strategy_code, ah.placement_code, ah.group_id
+            """
+        )
+    ).mappings().all()
+    return [
+        WorklistGroupRead(
+            strategy_code=row["strategy_code"],
+            placement_code=row["placement_code"],
+            group_id=row["group_id"],
+            channel_scope=row["channel_scope"],
+            client_count=int(row["client_count"] or 0),
+            display_name=format_worklist_group_display(row["strategy_code"], row["placement_code"], row["group_id"]),
+        )
+        for row in rows
+    ]
+
+
+def normalize_phone_type(value: Optional[str]) -> str:
+    normalized = (value or "CEL").strip().upper()
+    return normalized if normalized in {"CASA", "TRABAJO", "CEL"} else "CEL"
+
+
+def normalize_address_type(value: Optional[str]) -> str:
+    normalized = (value or "CASA").strip().upper()
+    return normalized if normalized in {"CASA", "TRABAJO", "OTRA"} else "CASA"
+
+
+def _ensure_primary_flag(items: list[dict]) -> list[dict]:
+    if not items:
+        return []
+    primary_index = next((index for index, item in enumerate(items) if item.get("is_primary")), 0)
+    for index, item in enumerate(items):
+        item["is_primary"] = index == primary_index
+    return items
+
+
+def get_client_demographic_profile(db: Session, client: Cliente) -> DemographicProfileRead:
+    phone_rows = db.execute(
+        text(
+            """
+            SELECT id, phone_type, value, is_primary
+            FROM client_contact_points
+            WHERE cliente_id = :client_id
+              AND contact_kind = 'PHONE'
+              AND activa = TRUE
+            ORDER BY is_primary DESC, id ASC
+            """
+        ),
+        {"client_id": client.id},
+    ).mappings().all()
+    email_rows = db.execute(
+        text(
+            """
+            SELECT id, value, is_primary
+            FROM client_contact_points
+            WHERE cliente_id = :client_id
+              AND contact_kind = 'EMAIL'
+              AND activa = TRUE
+            ORDER BY is_primary DESC, id ASC
+            """
+        ),
+        {"client_id": client.id},
+    ).mappings().all()
+    address_rows = db.execute(
+        text(
+            """
+            SELECT id, address_type, value, is_primary
+            FROM client_addresses
+            WHERE cliente_id = :client_id
+              AND activa = TRUE
+            ORDER BY is_primary DESC, id ASC
+            """
+        ),
+        {"client_id": client.id},
+    ).mappings().all()
+
+    phones = [
+        DemographicPhoneItem(
+            id=row["id"],
+            phone_type=normalize_phone_type(row["phone_type"]),
+            value=row["value"],
+            is_primary=bool(row["is_primary"]),
+        )
+        for row in phone_rows
+    ]
+    emails = [
+        DemographicEmailItem(
+            id=row["id"],
+            value=row["value"],
+            is_primary=bool(row["is_primary"]),
+        )
+        for row in email_rows
+    ]
+    addresses = [
+        DemographicAddressItem(
+            id=row["id"],
+            address_type=normalize_address_type(row["address_type"]),
+            value=row["value"],
+            is_primary=bool(row["is_primary"]),
+        )
+        for row in address_rows
+    ]
+
+    if not phones and client.telefono:
+        phones = [DemographicPhoneItem(id=None, phone_type="CEL", value=client.telefono, is_primary=True)]
+    if not emails and client.email:
+        emails = [DemographicEmailItem(id=None, value=client.email, is_primary=True)]
+    if not addresses and client.direccion:
+        addresses = [DemographicAddressItem(id=None, address_type="CASA", value=client.direccion, is_primary=True)]
+
+    return DemographicProfileRead(cliente_id=client.id, phones=phones, emails=emails, addresses=addresses)
+
+
+def format_demographic_history(profile: DemographicProfileRead) -> str:
+    phone_text = ", ".join(f"{item.phone_type}: {item.value}" for item in profile.phones) or "Sin telefonos"
+    email_text = ", ".join(item.value for item in profile.emails) or "Sin correos"
+    address_text = ", ".join(f"{item.address_type}: {item.value}" for item in profile.addresses) or "Sin direcciones"
+    return f"Datos demograficos actualizados. Telefonos [{phone_text}] | Correos [{email_text}] | Direcciones [{address_text}]"
+
+
+def save_client_demographic_profile(db: Session, client: Cliente, payload: DemographicUpdate, current_user: Usuario) -> DemographicProfileRead:
+    phones = [
+        {
+            "phone_type": normalize_phone_type(item.phone_type),
+            "value": item.value.strip(),
+            "is_primary": bool(item.is_primary),
+        }
+        for item in payload.phones
+        if item.value and item.value.strip()
+    ]
+    emails = [
+        {
+            "value": item.value.strip(),
+            "is_primary": bool(item.is_primary),
+        }
+        for item in payload.emails
+        if item.value and item.value.strip()
+    ]
+    addresses = [
+        {
+            "address_type": normalize_address_type(item.address_type),
+            "value": item.value.strip(),
+            "is_primary": bool(item.is_primary),
+        }
+        for item in payload.addresses
+        if item.value and item.value.strip()
+    ]
+
+    if not phones and payload.telefono and payload.telefono.strip():
+        phones = [{"phone_type": "CEL", "value": payload.telefono.strip(), "is_primary": True}]
+    if not emails and payload.email and payload.email.strip():
+        emails = [{"value": payload.email.strip(), "is_primary": True}]
+    if not addresses and payload.direccion and payload.direccion.strip():
+        addresses = [{"address_type": "CASA", "value": payload.direccion.strip(), "is_primary": True}]
+
+    phones = _ensure_primary_flag(phones)
+    emails = _ensure_primary_flag(emails)
+    addresses = _ensure_primary_flag(addresses)
+
+    db.execute(
+        text(
+            """
+            UPDATE client_contact_points
+            SET activa = FALSE, updated_at = CURRENT_TIMESTAMP
+            WHERE cliente_id = :client_id
+              AND activa = TRUE
+            """
+        ),
+        {"client_id": client.id},
+    )
+    db.execute(
+        text(
+            """
+            UPDATE client_addresses
+            SET activa = FALSE, updated_at = CURRENT_TIMESTAMP
+            WHERE cliente_id = :client_id
+              AND activa = TRUE
+            """
+        ),
+        {"client_id": client.id},
+    )
+
+    for item in phones:
+        db.execute(
+            text(
+                """
+                INSERT INTO client_contact_points (cliente_id, contact_kind, phone_type, value, is_primary, activa)
+                VALUES (:client_id, 'PHONE', :phone_type, :value, :is_primary, TRUE)
+                """
+            ),
+            {
+                "client_id": client.id,
+                "phone_type": item["phone_type"],
+                "value": item["value"],
+                "is_primary": item["is_primary"],
+            },
+        )
+    for item in emails:
+        db.execute(
+            text(
+                """
+                INSERT INTO client_contact_points (cliente_id, contact_kind, phone_type, value, is_primary, activa)
+                VALUES (:client_id, 'EMAIL', NULL, :value, :is_primary, TRUE)
+                """
+            ),
+            {
+                "client_id": client.id,
+                "value": item["value"],
+                "is_primary": item["is_primary"],
+            },
+        )
+    for item in addresses:
+        db.execute(
+            text(
+                """
+                INSERT INTO client_addresses (cliente_id, address_type, value, is_primary, activa)
+                VALUES (:client_id, :address_type, :value, :is_primary, TRUE)
+                """
+            ),
+            {
+                "client_id": client.id,
+                "address_type": item["address_type"],
+                "value": item["value"],
+                "is_primary": item["is_primary"],
+            },
+        )
+
+    client.telefono = next((item["value"] for item in phones if item["is_primary"]), phones[0]["value"] if phones else None)
+    client.email = next((item["value"] for item in emails if item["is_primary"]), emails[0]["value"] if emails else None)
+    client.direccion = next((item["value"] for item in addresses if item["is_primary"]), addresses[0]["value"] if addresses else None)
+
+    profile = get_client_demographic_profile(db, client)
+    db.add(
+        History(
+            entidad="clientes",
+            entidad_id=client.id,
+            accion="DEMOGRAFIA_ACTUALIZADA",
+            descripcion=format_demographic_history(profile),
+            usuario_id=current_user.id,
+        )
+    )
+    return profile
 
 
 def get_assigned_clients_for_collector(db: Session, collector: Usuario) -> list[Cliente]:
@@ -1215,7 +1837,60 @@ def get_assigned_clients_for_collector(db: Session, collector: Usuario) -> list[
             if item.cliente_id not in seen:
                 seen.add(item.cliente_id)
                 assigned_ids.append(item.cliente_id)
-        return db.query(Cliente).filter(Cliente.id.in_(assigned_ids)).order_by(Cliente.id).all()
+        clients = db.query(Cliente).filter(Cliente.id.in_(assigned_ids)).all()
+        clients_by_id = {client.id: client for client in clients}
+        current_assignments = (
+            db.query(AssignmentHistory)
+            .filter(AssignmentHistory.cliente_id.in_(assigned_ids), AssignmentHistory.is_current.is_(True))
+            .order_by(AssignmentHistory.start_at.desc(), AssignmentHistory.id.desc())
+            .all()
+        )
+        current_by_client: dict[int, AssignmentHistory] = {}
+        for row in current_assignments:
+            current_by_client.setdefault(row.cliente_id, row)
+
+        bucket_order = [
+            "PREVENTIVO",
+            "FMORA1",
+            "MMORA2",
+            "HMORA3",
+            "AMORA4",
+            "BMORA5",
+            "CMORA6",
+            "DMORA7",
+            "VAGENCIASEXTERNASINTERNO",
+            "HMR",
+            "AL_DIA",
+        ]
+        buckets: dict[str, list[Cliente]] = {}
+        for client_id in assigned_ids:
+            client = clients_by_id.get(client_id)
+            if not client:
+                continue
+            assignment_snapshot = current_by_client.get(client_id)
+            if assignment_snapshot and assignment_snapshot.strategy_code == "VAGENCIASEXTERNASINTERNO":
+                bucket_key = f"RECOVERY::{assignment_snapshot.placement_code or 'SIN_PLACEMENT'}::{assignment_snapshot.group_id or 'GENERAL'}"
+            else:
+                bucket_key = assignment_snapshot.strategy_code if assignment_snapshot and assignment_snapshot.strategy_code else "AL_DIA"
+            buckets.setdefault(bucket_key, []).append(client)
+
+        recovery_bucket_keys = sorted([key for key in buckets if key.startswith("RECOVERY::")])
+        ordered_bucket_keys = [key for key in bucket_order if key in buckets] + recovery_bucket_keys + [
+            key for key in buckets.keys() if key not in bucket_order and key not in recovery_bucket_keys
+        ]
+
+        balanced_clients: list[Cliente] = []
+        active_bucket_keys = [key for key in ordered_bucket_keys if buckets.get(key)]
+        while active_bucket_keys:
+            next_active: list[str] = []
+            for key in active_bucket_keys:
+                bucket = buckets.get(key, [])
+                if bucket:
+                    balanced_clients.append(bucket.pop(0))
+                if bucket:
+                    next_active.append(key)
+            active_bucket_keys = next_active
+        return balanced_clients
 
     collectors = get_collectors(db)
     if not collectors:
@@ -1224,6 +1899,380 @@ def get_assigned_clients_for_collector(db: Session, collector: Usuario) -> list[
     collector_index = collector_ids.index(collector.id)
     clients = db.query(Cliente).order_by(Cliente.id).all()
     return [client for client in clients if (client.id - 1) % len(collectors) == collector_index]
+
+
+def is_external_agency_collector(db: Session, user: Usuario) -> bool:
+    if user.rol != "Collector":
+        return False
+    groups = get_worklist_groups_for_user(db, user.id)
+    if not groups:
+        return False
+    scopes = {(item.channel_scope or "").upper() for item in groups if item.group_id}
+    return bool(scopes) and scopes == {"EXTERNO"}
+
+
+def get_visible_clients_for_user(db: Session, user: Usuario) -> list[Cliente]:
+    if user.rol in {"Admin", "Supervisor", "Auditor", "GestorUsuarios"}:
+        return db.query(Cliente).order_by(Cliente.id).all()
+    if user.rol == "Collector":
+        if is_external_agency_collector(db, user):
+            return get_assigned_clients_for_collector(db, user)
+        return db.query(Cliente).order_by(Cliente.id).all()
+    return []
+
+
+def client_matches_search(
+    client: Cliente,
+    search: str,
+    mode: str,
+    account_snapshots: list[dict[str, Any]],
+) -> bool:
+    normalized_query = re.sub(r"[^a-z0-9]", "", (search or "").lower())
+    raw_query = (search or "").strip().lower()
+    if not raw_query:
+        return True
+
+    def matches_value(value: Optional[str]) -> bool:
+        raw_value = str(value or "").lower()
+        normalized_value = re.sub(r"[^a-z0-9]", "", raw_value)
+        return raw_query in raw_value or (normalized_query and normalized_query in normalized_value)
+
+    account_values = []
+    for item in account_snapshots:
+        account_values.extend(
+            [
+                item.get("numero_cuenta"),
+                item.get("numero_plastico"),
+                str(item.get("numero_plastico") or "").replace("-", ""),
+                item.get("producto_nombre"),
+                item.get("codigo_ubicacion"),
+            ]
+        )
+
+    lookup_values = {
+        "all": [
+            str(client.id),
+            format_identity_code(client.identity_code, client.id),
+            client.dui,
+            client.nombres,
+            client.apellidos,
+            f"{client.nombres or ''} {client.apellidos or ''}".strip(),
+            client.telefono,
+            client.email,
+            *account_values,
+        ],
+        "unico": [str(client.id), format_identity_code(client.identity_code, client.id)],
+        "dui": [client.dui],
+        "nombre": [client.nombres, client.apellidos, f"{client.nombres or ''} {client.apellidos or ''}".strip()],
+        "cuenta": [item.get("numero_cuenta") for item in account_snapshots],
+        "plastico": [value for value in account_values if value and ("-" in str(value) or str(value).isdigit())],
+        "telefono": [client.telefono],
+    }
+    return any(matches_value(value) for value in lookup_values.get(mode, lookup_values["all"]) if value)
+
+
+def get_client_lookup_score(client: Cliente, search: str, mode: str) -> int:
+    normalized_query = re.sub(r"[^a-z0-9]", "", (search or "").lower())
+    raw_query = (search or "").strip().lower()
+    if not raw_query:
+        return 0
+
+    identity_code = format_identity_code(client.identity_code, client.id)
+    client_id_text = str(client.id)
+    code_digits = re.sub(r"\D", "", client.identity_code or "")
+    full_name = f"{client.nombres or ''} {client.apellidos or ''}".strip()
+
+    def normalized(value: Optional[str]) -> str:
+        return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+    def score_value(value: Optional[str], exact_score: int, prefix_score: int, contains_score: int) -> int:
+        raw_value = str(value or "").lower()
+        normalized_value = normalized(value)
+        if raw_query == raw_value or normalized_query == normalized_value:
+            return exact_score
+        if raw_value.startswith(raw_query) or (normalized_query and normalized_value.startswith(normalized_query)):
+            return prefix_score
+        if raw_query in raw_value or (normalized_query and normalized_query in normalized_value):
+            return contains_score
+        return 0
+
+    if mode in {"all", "unico"}:
+        best = max(
+            score_value(client_id_text, 1200, 1100, 1000),
+            score_value(identity_code, 1150, 1050, 950),
+            score_value(code_digits, 900, 850, 700),
+        )
+        if best:
+            return best
+
+    if mode in {"all", "dui"}:
+        best = score_value(client.dui, 800, 700, 600)
+        if best:
+            return best
+
+    if mode in {"all", "nombre"}:
+        best = max(
+            score_value(client.nombres, 500, 420, 320),
+            score_value(client.apellidos, 500, 420, 320),
+            score_value(full_name, 650, 560, 460),
+        )
+        if best:
+            return best
+
+    if mode in {"all", "telefono"}:
+        best = score_value(client.telefono, 780, 680, 580)
+        if best:
+            return best
+
+    return 0
+
+
+def build_collector_client_snapshot(db: Session, current_user: Usuario, client: Cliente) -> CollectorClientRead:
+    today = datetime.utcnow().date()
+    start_of_day = get_start_of_day(today)
+    accounts = db.query(Cuenta).filter(Cuenta.cliente_id == client.id).order_by(Cuenta.id).all()
+    assignment_snapshot = (
+        db.query(AssignmentHistory)
+        .filter(AssignmentHistory.cliente_id == client.id, AssignmentHistory.is_current.is_(True))
+        .order_by(AssignmentHistory.start_at.desc(), AssignmentHistory.id.desc())
+        .first()
+    )
+    contextual_accounts = select_accounts_for_operational_context(accounts, assignment_snapshot, datetime.utcnow())
+    account_ids = [item.id for item in accounts]
+    predictions = (
+        db.query(PrediccionIA)
+        .filter(PrediccionIA.cuenta_id.in_(account_ids))
+        .all()
+        if account_ids
+        else []
+    )
+    predictions_by_account = {prediction.cuenta_id: prediction for prediction in predictions}
+    pending_promises = (
+        db.query(Promesa)
+        .join(Cuenta, Cuenta.id == Promesa.cuenta_id)
+        .filter(Cuenta.cliente_id == client.id, Promesa.estado.in_(["PENDIENTE", "REVISION_SUPERVISOR"]))
+        .order_by(Promesa.fecha_promesa.asc())
+        .all()
+    )
+    all_promises = (
+        db.query(Promesa, Cuenta.numero_cuenta.label("numero_cuenta"))
+        .join(Cuenta, Cuenta.id == Promesa.cuenta_id)
+        .filter(Cuenta.cliente_id == client.id)
+        .order_by(Promesa.created_at.desc(), Promesa.fecha_promesa.desc())
+        .all()
+    )
+    payments = (
+        db.query(Pago, Cuenta.numero_cuenta.label("numero_cuenta"))
+        .join(Cuenta, Cuenta.id == Pago.cuenta_id)
+        .filter(Cuenta.cliente_id == client.id)
+        .order_by(Pago.fecha_pago.desc(), Pago.created_at.desc())
+        .all()
+    )
+    history_rows = (
+        db.query(History)
+        .filter(History.entidad == "clientes", History.entidad_id == client.id)
+        .order_by(History.created_at.desc(), History.id.desc())
+        .all()
+    )
+    actual_management_history = [
+        ManagementHistoryRead(
+            id=item.id,
+            fecha=item.created_at.isoformat() if item.created_at else "",
+            accion=item.accion,
+            descripcion=item.descripcion,
+            usuario_id=item.usuario_id,
+        )
+        for item in history_rows[:60]
+    ]
+    latest_history = next((item for item in history_rows if item.accion != "CALLBACK_PROGRAMADO"), None)
+    callback_history = next((item for item in history_rows if item.accion == "CALLBACK_PROGRAMADO"), None)
+    callback_at, _ = parse_callback_description(callback_history.descripcion if callback_history else None)
+    worked_today = any(
+        item.created_at and item.created_at >= start_of_day and item.accion in ["GESTION_REGISTRADA", "PROMESA_CREADA", "CLIENTE_ACTUALIZADO"]
+        for item in history_rows
+    )
+    strategy_context = derive_client_strategy_context(contextual_accounts, datetime.utcnow())
+    primary_strategy = (
+        assignment_snapshot.strategy_code
+        if assignment_snapshot and assignment_snapshot.strategy_code == "VAGENCIASEXTERNASINTERNO"
+        else strategy_context["primary_strategy"]
+    )
+    account_rows: list[CollectorAccountRead] = []
+    client_hmr = False
+    client_total = 0.0
+    account_snapshots: list[dict[str, Any]] = []
+
+    for account in contextual_accounts:
+        cycle_cut_day = get_cycle_cut_day(account)
+        due_day = get_due_day(cycle_cut_day)
+        strategy = resolve_strategy(account, datetime.utcnow())
+        account_display = derive_account_display_metadata(account)
+        hmr = is_hmr_candidate(account)
+        prediction = predictions_by_account.get(account.id)
+        if prediction:
+            ai_probability = float(prediction.probabilidad_pago_30d)
+            ai_score = float(prediction.score_modelo)
+            ai_recommendation = prediction.recomendacion
+        else:
+            ai_probability, ai_score, ai_recommendation = build_ai_fallback(account)
+        client_hmr = client_hmr or hmr
+        client_total += float(account.saldo_total)
+        account_snapshots.append(
+            {
+                "numero_cuenta": account.numero_cuenta,
+                "numero_plastico": account_display["plastic_number"],
+                "codigo_ubicacion": account_display["location_code"],
+                "producto_nombre": account_display["product_name"],
+            }
+        )
+        account_rows.append(
+            CollectorAccountRead(
+                id=account.id,
+                numero_cuenta=account.numero_cuenta,
+                numero_plastico=account_display["plastic_number"],
+                codigo_ubicacion=account_display["location_code"],
+                tipo_producto=account.tipo_producto,
+                producto_nombre=account_display["product_name"],
+                subtipo_producto=account.subtipo_producto,
+                segmento_producto=account_display["product_segment"],
+                estado=account.estado,
+                saldo_total=float(account.saldo_total),
+                saldo_mora=float(account.saldo_mora),
+                dias_mora=account.dias_mora,
+                bucket_actual=account.bucket_actual,
+                es_estrafinanciamiento=account.es_estrafinanciamiento,
+                ciclo_corte=cycle_cut_day,
+                dia_vencimiento=due_day,
+                estrategia=strategy,
+                hmr_elegible=hmr,
+                pago_minimo=calculate_minimum_payment(account),
+                ai_probability=round(ai_probability, 4),
+                ai_score=round(ai_score, 2),
+                ai_recommendation=ai_recommendation,
+            )
+        )
+
+    synthetic_history: list[ManagementHistoryRead] = []
+    for promise, numero_cuenta in all_promises[:20]:
+        synthetic_history.append(
+            ManagementHistoryRead(
+                id=-(200000000 + promise.id),
+                fecha=(promise.created_at or datetime.combine(promise.fecha_promesa, datetime.min.time())).isoformat(),
+                accion="PROMESA_CREADA",
+                descripcion=(
+                    f"Promesa {promise.estado.lower()} registrada para la cuenta {numero_cuenta} "
+                    f"con fecha {promise.fecha_promesa.isoformat()} por {float(promise.monto_prometido):,.2f}."
+                ),
+                usuario_id=promise.usuario_id,
+            )
+        )
+    for payment, numero_cuenta in payments[:20]:
+        synthetic_history.append(
+            ManagementHistoryRead(
+                id=-(300000000 + payment.id),
+                fecha=(payment.fecha_pago or payment.created_at or datetime.utcnow()).isoformat(),
+                accion="PAGO_REGISTRADO",
+                descripcion=(
+                    f"Pago registrado en la cuenta {numero_cuenta} por {float(payment.monto):,.2f} "
+                    f"via {payment.canal or 'canal no identificado'}."
+                ),
+                usuario_id=None,
+            )
+        )
+    if not actual_management_history:
+        synthetic_history.extend(
+            [
+                ManagementHistoryRead(
+                    id=-(400000000 + account.id),
+                    fecha=(account.created_at or datetime.utcnow()).isoformat(),
+                    accion="CUENTA_EN_SEGUIMIENTO",
+                    descripcion=(
+                        f"Cuenta {account.numero_cuenta} en {resolve_strategy(account, datetime.utcnow())} "
+                        f"con {account.dias_mora} dias de mora y saldo vencido de {float(account.saldo_mora):,.2f}."
+                    ),
+                    usuario_id=None,
+                )
+                for account in accounts[:3]
+            ]
+        )
+    management_history = sorted([*actual_management_history, *synthetic_history], key=lambda item: item.fecha or "", reverse=True)[:60]
+    last_management_text = latest_history.descripcion if latest_history else (management_history[0].descripcion if management_history else None)
+    lead_account = next((item for item in account_rows if strategy_context["lead_account"] and item.id == strategy_context["lead_account"].id), account_rows[0] if account_rows else None)
+    ai_probability = float(lead_account.ai_probability if lead_account and lead_account.ai_probability is not None else client.score_riesgo)
+    promise_break_probability = (
+        predict_promise_break_probability(strategy_context["lead_account"] or contextual_accounts[0], pending_promises, callback_at, float(client.score_riesgo))
+        if contextual_accounts
+        else float(np.clip(float(client.score_riesgo) * 0.65, 0.08, 0.9))
+    )
+    best_channel = suggest_best_channel(
+        primary_strategy,
+        promise_break_probability,
+        ai_probability,
+        bool(client.telefono),
+        bool(client.email),
+    )
+    review_pending = any(item.estado == "REVISION_SUPERVISOR" for item in pending_promises)
+    sublista_trabajo, sublista_descripcion = derive_worklist_sublist(client, accounts, pending_promises, callback_at, review_pending)
+    if primary_strategy == "VAGENCIASEXTERNASINTERNO" and assignment_snapshot and assignment_snapshot.group_id:
+        sublista_trabajo = assignment_snapshot.group_id
+        sublista_descripcion = (
+            f"{assignment_snapshot.channel_scope or 'MIXTO'} · "
+            f"{assignment_snapshot.placement_code or 'SIN PLACEMENT'} · "
+            f"Lista {assignment_snapshot.group_id}"
+        )
+    ai_next_action, ai_talk_track = build_copilot_guidance(
+        client,
+        primary_strategy,
+        best_channel,
+        promise_break_probability,
+        ai_probability,
+        pending_promises,
+        round(client_total, 2),
+    )
+
+    return CollectorClientRead(
+        id=client.id,
+        identity_code=format_identity_code(client.identity_code, client.id),
+        dui=client.dui,
+        nombres=client.nombres,
+        apellidos=client.apellidos,
+        telefono=client.telefono,
+        email=client.email,
+        direccion=client.direccion,
+        segmento=client.segmento,
+        score_riesgo=float(client.score_riesgo),
+        accounts=account_rows,
+        pending_promises=[
+            PromiseRead(
+                id=item.id,
+                cuenta_id=item.cuenta_id,
+                fecha_promesa=item.fecha_promesa.isoformat(),
+                monto_prometido=float(item.monto_prometido),
+                estado=item.estado,
+            )
+            for item in pending_promises
+        ],
+        last_management=last_management_text,
+        worked_today=worked_today,
+        estrategia_principal=primary_strategy,
+        estrategia_subgrupo=strategy_context["strategy_subgroup"],
+        segmento_operativo=strategy_context["operational_segment"],
+        producto_cabeza=strategy_context["head_product_name"],
+        dias_mora_cabeza=strategy_context["head_days_past_due"],
+        hmr_elegible=client_hmr,
+        total_outstanding=round(client_total, 2),
+        next_callback_at=callback_at.isoformat() if callback_at else None,
+        requires_supervisor_review=review_pending,
+        management_history=management_history,
+        ai_best_channel=best_channel,
+        ai_promise_break_probability=round(promise_break_probability, 4),
+        ai_next_action=ai_next_action,
+        ai_talk_track=ai_talk_track,
+        placement_code=assignment_snapshot.placement_code if assignment_snapshot else None,
+        group_id=assignment_snapshot.group_id if assignment_snapshot else None,
+        sublista_trabajo=sublista_trabajo,
+        sublista_descripcion=sublista_descripcion,
+    )
 
 
 def get_cycle_cut_day(account: Cuenta) -> int:
@@ -1362,6 +2411,25 @@ def derive_client_strategy_context(accounts: list[Cuenta], today: datetime) -> d
         "head_product_name": lead_account_display["product_name"],
         "head_days_past_due": int(lead_account.dias_mora or 0),
     }
+
+
+def select_accounts_for_operational_context(
+    accounts: list[Cuenta],
+    assignment_snapshot: Optional[AssignmentHistory],
+    today: datetime,
+) -> list[Cuenta]:
+    if not accounts:
+        return accounts
+    if not assignment_snapshot or assignment_snapshot.strategy_code != "VAGENCIASEXTERNASINTERNO":
+        return accounts
+    recovery_accounts = [
+        account
+        for account in accounts
+        if account.fecha_separacion is not None
+        or (account.estado or "").upper() in {"LIQUIDADO", "Z"}
+        or resolve_strategy(account, today) == "VAGENCIASEXTERNASINTERNO"
+    ]
+    return recovery_accounts or accounts
 
 
 def get_start_of_day(value: date) -> datetime:
@@ -1594,9 +2662,9 @@ def build_admin_template_docx_bytes() -> bytes:
 
 def build_admin_import_template_csv_bytes() -> bytes:
     sample_rows = [
-        "codigo_cliente,nombres,apellidos,dui,telefono,email,direccion,segmento,score_riesgo,numero_cuenta,tipo_producto,subtipo_producto,saldo_capital,saldo_mora,saldo_total,dias_mora,bucket_actual,estado,fecha_apertura,fecha_vencimiento,tasa_interes,es_estrafinanciamiento,estrategia_codigo,collector_username",
-        "CLI90001,Ana Lucia,Martinez Cruz,01234567-8,7000-1001,ana.demo@empresa.com,San Salvador Centro,Preferente,0.35,PRE-90001,Prestamo,Consumo,2800,325,3125,25,FMORA1,ACTIVA,2024-01-15,2026-04-10,18.5,false,FMORA1,collector1",
-        "CLI90001,Ana Lucia,Martinez Cruz,01234567-8,7000-1001,ana.demo@empresa.com,San Salvador Centro,Preferente,0.35,TAR-90001,Tarjeta,Clasica,1400,210,1610,25,FMORA1,ACTIVA,2024-06-01,2026-04-10,29.9,false,FMORA1,collector1",
+        "identity_code,nombres,apellidos,dui,telefono,email,direccion,segmento,score_riesgo,numero_cuenta,tipo_producto,subtipo_producto,saldo_capital,saldo_mora,saldo_total,dias_mora,bucket_actual,estado,fecha_apertura,fecha_vencimiento,tasa_interes,es_estrafinanciamiento,estrategia_codigo,collector_username",
+        "000090001,Ana Lucia,Martinez Cruz,01234567-8,7000-1001,ana.demo@empresa.com,San Salvador Centro,Preferente,0.35,PRE-90001,Prestamo,Consumo,2800,325,3125,25,FMORA1,ACTIVA,2024-01-15,2026-04-10,18.5,false,FMORA1,collector1",
+        "000090001,Ana Lucia,Martinez Cruz,01234567-8,7000-1001,ana.demo@empresa.com,San Salvador Centro,Preferente,0.35,TAR-90001,Tarjeta,Clasica,1400,210,1610,25,FMORA1,ACTIVA,2024-06-01,2026-04-10,29.9,false,FMORA1,collector1",
     ]
     return "\n".join(sample_rows).encode("utf-8")
 
@@ -1652,7 +2720,9 @@ def normalize_import_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_admin_import_proposal(file_name: str, payload: bytes, db: Session) -> dict:
-    required_columns = ["codigo_cliente", "nombres", "apellidos", "dui", "numero_cuenta", "tipo_producto"]
+    if "identity_code" not in frame.columns and "codigo_cliente" in frame.columns:
+        frame = frame.rename(columns={"codigo_cliente": "identity_code"})
+    required_columns = ["identity_code", "nombres", "apellidos", "dui", "numero_cuenta", "tipo_producto"]
     optional_columns = [
         "telefono",
         "email",
@@ -1679,7 +2749,7 @@ def build_admin_import_proposal(file_name: str, payload: bytes, db: Session) -> 
         raise HTTPException(status_code=400, detail=f"Faltan columnas obligatorias: {', '.join(missing)}.")
 
     users_by_username = {item.username: item for item in db.query(Usuario).filter(Usuario.rol == "Collector").all()}
-    existing_clients_map = {item.codigo_cliente: item for item in db.query(Cliente).all()}
+    existing_clients_map = {item.identity_code: item for item in db.query(Cliente).all()}
     existing_accounts_map = {item.numero_cuenta: item for item in db.query(Cuenta).all()}
 
     clean_rows: list[dict] = []
@@ -1732,7 +2802,7 @@ def build_admin_import_proposal(file_name: str, payload: bytes, db: Session) -> 
             sample_errors.extend(row_errors[:3])
             continue
 
-        client_exists = existing_clients_map.get(str(row["codigo_cliente"]).strip())
+        client_exists = existing_clients_map.get(str(row["identity_code"]).strip())
         account_exists = existing_accounts_map.get(str(row["numero_cuenta"]).strip())
         new_clients += 0 if client_exists else 1
         existing_clients_count += 1 if client_exists else 0
@@ -1742,7 +2812,7 @@ def build_admin_import_proposal(file_name: str, payload: bytes, db: Session) -> 
 
         clean_rows.append(
             {
-                "codigo_cliente": str(row["codigo_cliente"]).strip(),
+                "identity_code": str(row["identity_code"]).strip(),
                 "nombres": str(row["nombres"]).strip(),
                 "apellidos": str(row["apellidos"]).strip(),
                 "dui": str(row["dui"]).strip(),
@@ -1772,7 +2842,7 @@ def build_admin_import_proposal(file_name: str, payload: bytes, db: Session) -> 
 
     preview_rows = [
         {
-            "codigo_cliente": item["codigo_cliente"],
+            "identity_code": item["identity_code"],
             "cliente": f"{item['nombres']} {item['apellidos']}",
             "numero_cuenta": item["numero_cuenta"],
             "tipo_producto": item["tipo_producto"],
@@ -2043,7 +3113,7 @@ def build_admin_report_rows(description: str, db: Session) -> tuple[dict, list[d
             Cuenta.saldo_total,
             Cuenta.dias_mora,
             Cuenta.estado,
-            Cliente.codigo_cliente,
+            Cliente.identity_code,
             Cliente.nombres,
             Cliente.apellidos,
             Cliente.telefono,
@@ -2104,7 +3174,7 @@ def build_admin_report_rows(description: str, db: Session) -> tuple[dict, list[d
                 "numero_cuenta": row.numero_cuenta,
                 "tipo_producto": row.tipo_producto,
                 "subtipo_producto": row.subtipo_producto or "",
-                "cliente_codigo": row.codigo_cliente,
+                "identity_code": row.identity_code,
                 "cliente_nombre": f"{row.nombres} {row.apellidos}",
                 "telefono": row.telefono or "",
                 "email": row.email or "",
@@ -2121,8 +3191,12 @@ def build_admin_report_rows(description: str, db: Session) -> tuple[dict, list[d
                 "probability": probability,
                 "ai_recommendation": row.recomendacion or "",
                 "channel": (
-                    "Chatbot WhatsApp + SMS"
-                    if strategy_code in {"AL_DIA", "PREVENTIVO", "FMORA1", "MMORA2"}
+                    "Monitoreo sin contacto"
+                    if strategy_code == "AL_DIA"
+                    else "Chatbot WhatsApp + SMS"
+                    if strategy_code in {"PREVENTIVO", "FMORA1", "MMORA2"}
+                    else "Callbot + llamada humana + WhatsApp"
+                    if strategy_code == "VAGENCIASEXTERNASINTERNO"
                     else "Llamada telefónica + WhatsApp"
                 ),
             }
@@ -2212,7 +3286,7 @@ def build_admin_generated_report(description: str, db: Session) -> dict:
         for row in filtered_rows:
             strategy_code = row["strategy_code"]
             account_counts[strategy_code] = account_counts.get(strategy_code, 0) + 1
-            client_counts.setdefault(strategy_code, set()).add(row["cliente_codigo"])
+            client_counts.setdefault(strategy_code, set()).add(row["identity_code"])
             balance_counts[strategy_code] = balance_counts.get(strategy_code, 0.0) + float(row["saldo_mora"] or 0)
 
         ordered_items = [
@@ -2225,7 +3299,7 @@ def build_admin_generated_report(description: str, db: Session) -> dict:
             for strategy in sorted(account_counts.keys(), key=lambda key: strategy_order.get(key, 99))
         ]
         total_accounts = sum(account_counts.values())
-        total_clients = len({row["cliente_codigo"] for row in filtered_rows})
+        total_clients = len({row["identity_code"] for row in filtered_rows})
         metric_key = "clients" if filters.get("strategy_metric") == "CLIENTES" else "accounts"
         top_strategy = max(ordered_items, key=lambda item: item[metric_key])["label"] if ordered_items else "Sin datos"
         top_strategy_value = max(ordered_items, key=lambda item: item[metric_key])[metric_key] if ordered_items else 0
@@ -2302,7 +3376,7 @@ def build_admin_generated_report(description: str, db: Session) -> dict:
             "type": "table",
             "items": [
                 {
-                    "label": f"{row['cliente_codigo']} · {row['numero_cuenta']}",
+                    "label": f"{row['identity_code']} · {row['numero_cuenta']}",
                     "value": f"${row['saldo_mora']:,.2f} · {round(row['probability'] * 100, 2)}%",
                 }
                 for row in top_accounts
@@ -2343,7 +3417,7 @@ def build_admin_report_csv(description: str, db: Session) -> bytes:
             "estrategia_filtrada",
             "filtro_saldo_minimo",
             "filtro_probabilidad",
-            "codigo_cliente",
+            "identity_code",
             "cliente_nombre",
             "telefono",
             "email",
@@ -2371,7 +3445,7 @@ def build_admin_report_csv(description: str, db: Session) -> bytes:
                 filters["strategy_code"] or "",
                 filters["min_balance"] if filters["min_balance"] is not None else "",
                 filters["probability_band"] or "",
-                row["cliente_codigo"],
+                row["identity_code"],
                 row["cliente_nombre"],
                 row["telefono"],
                 row["email"],
@@ -2400,6 +3474,7 @@ def run_daily_operational_simulation(
     current_user: Usuario,
     fmora1_clients: int = 250,
     preventivo_clients: int = 120,
+    recovery_clients: int = 1000,
 ) -> dict:
     today = date.today()
     simulation_key = f"SIM-DAY-{today.isoformat()}"
@@ -2418,6 +3493,10 @@ def run_daily_operational_simulation(
             "aged_accounts": 0,
             "inserted_fmora1_clients": 0,
             "inserted_preventivo_clients": 0,
+            "inserted_recovery_clients": 0,
+            "simulated_payments": 0,
+            "fully_cured_accounts": 0,
+            "recovery_rotations": 0,
             "total_clients": db.query(Cliente).count(),
             "total_accounts": db.query(Cuenta).count(),
             "message": "La simulacion del dia ya habia sido aplicada previamente.",
@@ -2428,46 +3507,120 @@ def run_daily_operational_simulation(
     if not active_collectors:
         raise HTTPException(status_code=400, detail="No hay collectors activos para asignar la nueva cartera.")
 
+    def bucket_from_days(days: int) -> str:
+        return (
+            "0-30" if days <= 30 else
+            "31-60" if days <= 60 else
+            "61-90" if days <= 90 else
+            "91-120" if days <= 120 else
+            "121-150" if days <= 150 else
+            "151-180" if days <= 180 else
+            "181+"
+        )
+
+    simulated_payments = 0
+    fully_cured_accounts = 0
+
+    def apply_payment_effect(account: Cuenta, payment_amount: float) -> None:
+        nonlocal fully_cured_accounts
+        previous_total = float(account.saldo_total or 0)
+        previous_mora = float(account.saldo_mora or 0)
+        if previous_total <= 0:
+            return
+        applied_amount = min(payment_amount, previous_total)
+        account.saldo_total = round(max(0.0, previous_total - applied_amount), 2)
+        account.saldo_mora = round(max(0.0, previous_mora - min(applied_amount, previous_mora)), 2)
+        if account.saldo_total <= 0.5 or applied_amount >= previous_total * 0.92:
+            account.saldo_total = 0.0
+            account.saldo_mora = 0.0
+            account.dias_mora = 0
+            account.bucket_actual = "0-30"
+            account.estado = "ACTIVA"
+            fully_cured_accounts += 1
+            return
+
+        minimum_reference = max(calculate_minimum_payment(account), 1.0)
+        if applied_amount >= previous_mora:
+            reduction_band = 45
+        elif applied_amount >= minimum_reference * 2:
+            reduction_band = 25
+        elif applied_amount >= minimum_reference:
+            reduction_band = 12
+        else:
+            reduction_band = 5
+
+        account.dias_mora = max(0, int(account.dias_mora or 0) - reduction_band)
+        account.bucket_actual = bucket_from_days(int(account.dias_mora or 0))
+        if account.dias_mora == 0 or (account.estado in {"LIQUIDADO", "Z"} and account.dias_mora <= 180):
+            account.estado = "ACTIVA"
+
     aged_accounts = 0
     accounts_to_age = db.query(Cuenta).filter(Cuenta.dias_mora > 0, Cuenta.estado.in_(["ACTIVA", "VIGENTE", "LIQUIDADO", "Z"])).all()
     for account in accounts_to_age:
         aged_accounts += 1
         new_days = int(account.dias_mora or 0) + 1
         account.dias_mora = new_days
-        account.bucket_actual = (
-            "0-30" if new_days <= 30 else
-            "31-60" if new_days <= 60 else
-            "61-90" if new_days <= 90 else
-            "91-120" if new_days <= 120 else
-            "121-150" if new_days <= 150 else
-            "151-180" if new_days <= 180 else
-            "181+"
-        )
+        account.bucket_actual = bucket_from_days(new_days)
         account.saldo_mora = round(float(account.saldo_mora or 0) * 1.01 + (1.5 if new_days <= 30 else 3.0 if new_days <= 90 else 5.0), 2)
         account.saldo_total = round(float(account.saldo_capital or 0) + float(account.saldo_mora or 0), 2)
 
     current_max_client = db.query(func.coalesce(func.max(Cliente.id), 0)).scalar() or 0
+    current_max_identity_seed = db.execute(
+        text("SELECT COALESCE(MAX(CAST(identity_code AS BIGINT)), 0) FROM clientes")
+    ).scalar() or 0
     current_max_account = db.query(func.coalesce(func.max(Cuenta.id), 0)).scalar() or 0
     inserted_fmora1_clients = 0
     inserted_preventivo_clients = 0
+    inserted_recovery_clients = 0
+    recovery_rotations = 0
+    seeded_recovery_client_ids: set[int] = set()
+
+    payable_accounts = (
+        db.query(Cuenta)
+        .filter(Cuenta.dias_mora > 0, Cuenta.saldo_total > 0, Cuenta.estado.in_(["ACTIVA", "VIGENTE", "LIQUIDADO", "Z"]))
+        .order_by(Cuenta.id.asc())
+        .all()
+    )
+    for index, account in enumerate(payable_accounts, start=1):
+        payment_amount = None
+        if index % 11 == 0:
+            payment_amount = float(account.saldo_total or 0)
+        elif index % 7 == 0:
+            payment_amount = min(float(account.saldo_total or 0), round(max(calculate_minimum_payment(account) * 2.2, float(account.saldo_mora or 0) * 0.85), 2))
+        elif index % 5 == 0:
+            payment_amount = min(float(account.saldo_total or 0), round(max(calculate_minimum_payment(account), float(account.saldo_mora or 0) * 0.45), 2))
+        if not payment_amount or payment_amount <= 0:
+            continue
+        db.add(
+            Pago(
+                cuenta_id=account.id,
+                monto=round(payment_amount, 2),
+                fecha_pago=current_timestamp,
+                canal="Simulacion diaria",
+                referencia=f"{simulation_key}-PAY-{account.id}",
+                observacion="Pago simulado para reflejar movimiento entre estrategias.",
+            )
+        )
+        apply_payment_effect(account, float(payment_amount))
+        simulated_payments += 1
 
     for index in range(1, fmora1_clients + 1):
         client = Cliente(
-            codigo_cliente=f"DAY1{str(current_max_client + index).zfill(6)}",
+            identity_code=build_identity_code(current_max_identity_seed + index),
             nombres=["Luis Alberto", "Andrea Sofia", "Carlos Mauricio", "Diana Marcela", "Jose Ricardo", "Paola Fernanda", "Mario Ernesto", "Melissa Carolina"][index % 8],
             apellidos=["Martinez Cruz", "Hernandez Flores", "Lopez Ayala", "Ramirez Ruiz", "Guardado Perez", "Pineda Torres", "Castro Molina", "Reyes Sorto"][(index + 3) % 8],
-            dui=f"8{str(current_max_client + index).zfill(7)}-{(current_max_client + index) % 10}",
-            nit=f"0614-{str(current_max_client + index).zfill(6)}-{str((current_max_client + index) % 1000).zfill(3)}-{(current_max_client + index) % 10}",
-            telefono=f"75{str((current_max_client + index) % 1000000).zfill(6)}",
-            email=f"fmora1.{current_max_client + index}@demo360collectplus.com",
+            dui=f"8{str(current_max_identity_seed + index).zfill(7)}-{(current_max_identity_seed + index) % 10}",
+            nit=f"0614-{str(current_max_identity_seed + index).zfill(6)}-{str((current_max_identity_seed + index) % 1000).zfill(3)}-{(current_max_identity_seed + index) % 10}",
+            telefono=f"75{str((current_max_identity_seed + index) % 1000000).zfill(6)}",
+            email=f"fmora1.{current_max_identity_seed + index}@demo360collectplus.com",
             direccion=(
-                f"San Salvador, Colonia Medica, Pasaje {current_max_client + index}"
+                f"San Salvador, Colonia Medica, Pasaje {current_max_identity_seed + index}"
                 if index % 4 == 0 else
-                f"Santa Ana, Residencial Primavera, Casa {current_max_client + index}"
+                f"Santa Ana, Residencial Primavera, Casa {current_max_identity_seed + index}"
                 if index % 4 == 1 else
-                f"Soyapango, Colonia Guadalupe, Avenida {current_max_client + index}"
+                f"Soyapango, Colonia Guadalupe, Avenida {current_max_identity_seed + index}"
                 if index % 4 == 2 else
-                f"San Miguel, Residencial El Sitio, Poligono {current_max_client + index}"
+                f"San Miguel, Residencial El Sitio, Poligono {current_max_identity_seed + index}"
             ),
             score_riesgo=round(0.24 + ((index % 30) / 100.0), 2),
             segmento=["Preferente", "Masivo", "Riesgo", "Recuperacion"][index % 4],
@@ -2506,19 +3659,19 @@ def run_daily_operational_simulation(
     next_manual_account_id = db.query(func.coalesce(func.max(Cuenta.id), 0)).scalar() or current_max_account
     for index in range(1, preventivo_clients + 1):
         client = Cliente(
-            codigo_cliente=f"PREV{str(current_max_client + fmora1_clients + index).zfill(6)}",
+            identity_code=build_identity_code(current_max_identity_seed + fmora1_clients + index),
             nombres=["Karen Patricia", "Victor Manuel", "Gloria Beatriz", "Oscar David", "Roxana Isabel", "Francisco Javier"][index % 6],
             apellidos=["Arias Portillo", "Baires Mendoza", "Chavez Dubon", "Navarrete Rivas", "Calderon Ponce", "Serrano Mejia"][(index + 4) % 6],
-            dui=f"7{str(current_max_client + fmora1_clients + index).zfill(7)}-{(current_max_client + fmora1_clients + index) % 10}",
-            nit=f"0614-{str(current_max_client + fmora1_clients + index).zfill(6)}-{str(700 + index).zfill(3)}-{(current_max_client + fmora1_clients + index) % 10}",
-            telefono=f"74{str((current_max_client + fmora1_clients + index) % 1000000).zfill(6)}",
-            email=f"preventivo.{current_max_client + fmora1_clients + index}@demo360collectplus.com",
+            dui=f"7{str(current_max_identity_seed + fmora1_clients + index).zfill(7)}-{(current_max_identity_seed + fmora1_clients + index) % 10}",
+            nit=f"0614-{str(current_max_identity_seed + fmora1_clients + index).zfill(6)}-{str(700 + index).zfill(3)}-{(current_max_identity_seed + fmora1_clients + index) % 10}",
+            telefono=f"74{str((current_max_identity_seed + fmora1_clients + index) % 1000000).zfill(6)}",
+            email=f"preventivo.{current_max_identity_seed + fmora1_clients + index}@demo360collectplus.com",
             direccion=(
-                f"San Salvador, Residencial Escalon Norte, Casa {current_max_client + fmora1_clients + index}"
+                f"San Salvador, Residencial Escalon Norte, Casa {current_max_identity_seed + fmora1_clients + index}"
                 if index % 3 == 0 else
-                f"Santa Tecla, Colonia Quezaltepec, Pasaje {current_max_client + fmora1_clients + index}"
+                f"Santa Tecla, Colonia Quezaltepec, Pasaje {current_max_identity_seed + fmora1_clients + index}"
                 if index % 3 == 1 else
-                f"Antiguo Cuscatlan, Urbanizacion Madreselva, Casa {current_max_client + fmora1_clients + index}"
+                f"Antiguo Cuscatlan, Urbanizacion Madreselva, Casa {current_max_identity_seed + fmora1_clients + index}"
             ),
             score_riesgo=round(0.16 + ((index % 14) / 100.0), 2),
             segmento=["Preferente", "Masivo", "Recuperacion"][index % 3],
@@ -2555,15 +3708,106 @@ def run_daily_operational_simulation(
         db.add(PrediccionIA(cuenta_id=account.id, probabilidad_pago_30d=round(0.71 - ((index % 8) * 0.01), 4), score_modelo=round((71 - ((index % 8) * 1.0)) * 10, 2), modelo_version="xgb-v2-demo", recomendacion="Seguimiento preventivo con recordatorio digital y priorizacion de chatbot antes de contacto humano."))
         inserted_preventivo_clients += 1
 
+    # Preventivo inserts explicit account ids to avoid cycle-cut collisions.
+    # Sync the database sequence before inserting Recovery accounts with automatic ids.
     db.flush()
+    db.execute(
+        text(
+            "SELECT setval(pg_get_serial_sequence('cuentas', 'id'), COALESCE((SELECT MAX(id) FROM cuentas), 1), true)"
+        )
+    )
+
+    for index in range(1, recovery_clients + 1):
+        sequence_base = current_max_identity_seed + fmora1_clients + preventivo_clients + index
+        separation_date = build_recovery_separation_date(sequence_base, today)
+        client = Cliente(
+            identity_code=build_identity_code(sequence_base),
+            nombres=["Samuel Antonio", "Gabriela Elena", "Mauricio Jose", "Patricia Lorena", "Edwin Rafael", "Marisela Beatriz"][index % 6],
+            apellidos=["Rivera Diaz", "Mejia Paredes", "Portillo Castillo", "Linares Castro", "Rivas Sandoval", "Bonilla Flores"][(index + 2) % 6],
+            dui=f"6{str(sequence_base).zfill(7)}-{sequence_base % 10}",
+            nit=f"0614-{str(sequence_base).zfill(6)}-{str(500 + index).zfill(3)}-{sequence_base % 10}",
+            telefono=f"73{str(sequence_base % 1000000).zfill(6)}",
+            email=f"recovery.{sequence_base}@demo360collectplus.com",
+            direccion=f"San Salvador, Ruta Recovery, placement {index}, cliente {sequence_base}",
+            score_riesgo=round(0.72 + ((index % 18) / 100.0), 2),
+            segmento="Recovery",
+        )
+        db.add(client)
+        db.flush()
+        account = Cuenta(
+            cliente_id=client.id,
+            numero_cuenta=f"RCV-{str(client.id).zfill(6)}",
+            tipo_producto="Tarjeta" if index % 2 == 0 else "Prestamo",
+            subtipo_producto="Recuperacion",
+            saldo_capital=round(850 + (index % 60) * 45, 2),
+            saldo_mora=round(420 + (index % 25) * 24, 2),
+            saldo_total=round(1270 + (index % 60) * 61, 2),
+            dias_mora=185 + (index % 45),
+            bucket_actual="181+",
+            estado="LIQUIDADO" if index % 2 == 0 else "Z",
+            fecha_apertura=today - timedelta(days=((index % 1600) + 420)),
+            fecha_vencimiento=today - timedelta(days=185 + (index % 45)),
+            fecha_separacion=separation_date,
+            tasa_interes=round(18 + (index % 6) * 0.9, 2),
+            es_estrafinanciamiento=False,
+        )
+        db.add(account)
+        db.flush()
+        collector = active_collectors[(index - 1) % len(active_collectors)]
+        assignment = WorklistAssignment(usuario_id=collector.id, cliente_id=client.id, estrategia_codigo="VAGENCIASEXTERNASINTERNO", activa=True)
+        db.add(assignment)
+        db.flush()
+        record_assignment_history(db, client, assignment, strategy_code="VAGENCIASEXTERNASINTERNO", notes="Simulacion diaria automatica: cliente Recovery distribuido en placement y agencia.", user=collector)
+        db.add(History(entidad="clientes", entidad_id=client.id, accion="CARGA_RECOVERY", descripcion=f"Cliente Recovery ingresado en VAGENCIASEXTERNASINTERNO. Cuenta {account.numero_cuenta} asignada a placement inicial.", usuario_id=collector.id, created_at=current_timestamp))
+        db.add(PrediccionIA(cuenta_id=account.id, probabilidad_pago_30d=round(0.34 - ((index % 9) * 0.012), 4), score_modelo=round((34 - ((index % 9) * 1.2)) * 10, 2), modelo_version="xgb-v2-demo", recomendacion="Recovery de alta severidad. Priorizar callbot, llamada humana y refuerzo por WhatsApp."))
+        inserted_recovery_clients += 1
+        seeded_recovery_client_ids.add(client.id)
+
+    db.flush()
+    recovery_assignments = (
+        db.query(WorklistAssignment)
+        .join(Cuenta, Cuenta.cliente_id == WorklistAssignment.cliente_id)
+        .filter(
+            WorklistAssignment.activa.is_(True),
+            Cuenta.dias_mora > 180,
+            Cuenta.estado.in_(["LIQUIDADO", "Z"]),
+        )
+        .distinct()
+        .all()
+    )
+    rotated_clients: set[int] = set()
+    for assignment in recovery_assignments:
+        if assignment.cliente_id in rotated_clients:
+            continue
+        if assignment.cliente_id in seeded_recovery_client_ids:
+            continue
+        rotated_clients.add(assignment.cliente_id)
+        client = db.get(Cliente, assignment.cliente_id)
+        if not client:
+            continue
+        assignment.estrategia_codigo = "VAGENCIASEXTERNASINTERNO"
+        record_assignment_history(
+            db,
+            client,
+            assignment,
+            strategy_code="VAGENCIASEXTERNASINTERNO",
+            notes="Rotacion diaria de placement Recovery segun simulacion operativa.",
+            user=db.get(Usuario, assignment.usuario_id) if assignment.usuario_id else None,
+        )
+        recovery_rotations += 1
+
     db.execute(text("SELECT setval(pg_get_serial_sequence('cuentas', 'id'), (SELECT MAX(id) FROM cuentas))"))
-    db.add(History(entidad="system", entidad_id=0, accion="SIMULACION_DIA_OPERATIVO", descripcion=f"{simulation_key}: mora +1 aplicada a cuentas vencidas, {inserted_fmora1_clients} clientes FMORA1 nuevos y {inserted_preventivo_clients} clientes PREVENTIVO nuevos cargados al sistema.", usuario_id=current_user.id, created_at=current_timestamp))
+    db.add(History(entidad="system", entidad_id=0, accion="SIMULACION_DIA_OPERATIVO", descripcion=f"{simulation_key}: mora +1 aplicada a cuentas vencidas, pagos simulados {simulated_payments}, {inserted_fmora1_clients} clientes FMORA1 nuevos, {inserted_preventivo_clients} clientes PREVENTIVO nuevos, {inserted_recovery_clients} clientes Recovery nuevos y {recovery_rotations} rotaciones de placement.", usuario_id=current_user.id, created_at=current_timestamp))
     db.commit()
     return {
         "simulation_key": simulation_key,
         "aged_accounts": aged_accounts,
         "inserted_fmora1_clients": inserted_fmora1_clients,
         "inserted_preventivo_clients": inserted_preventivo_clients,
+        "inserted_recovery_clients": inserted_recovery_clients,
+        "simulated_payments": simulated_payments,
+        "fully_cured_accounts": fully_cured_accounts,
+        "recovery_rotations": recovery_rotations,
         "total_clients": db.query(Cliente).count(),
         "total_accounts": db.query(Cuenta).count(),
         "message": "Dia operativo simulado correctamente.",
@@ -2606,6 +3850,282 @@ def add_business_days(start_date: date, business_days: int) -> date:
         if current.weekday() < 5:
             added += 1
     return current
+
+
+def build_recovery_separation_date(seed_index: int, reference_date: Optional[date] = None) -> date:
+    target_date = reference_date or date.today()
+    start = date(RECOVERY_VINTAGE_START_YEAR, 1, 1)
+    end = date(target_date.year, 12, 31)
+    span_days = max((end - start).days + 1, 365)
+    return start + timedelta(days=((seed_index * 17) % span_days))
+
+
+def build_recovery_vintage_overview(
+    db: Session,
+    year: int,
+    lookback_days: int = 120,
+    payment_threshold: float = 10.0,
+    sample_limit: int = 60,
+) -> RecoveryVintageOverviewResponse:
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    vintage_rows = (
+        db.query(Cuenta, Cliente)
+        .join(Cliente, Cliente.id == Cuenta.cliente_id)
+        .filter(
+            Cuenta.fecha_separacion.isnot(None),
+            func.extract("year", Cuenta.fecha_separacion) == year,
+        )
+        .order_by(Cuenta.fecha_separacion.asc(), Cuenta.id.asc())
+        .all()
+    )
+
+    if not vintage_rows:
+        return RecoveryVintageOverviewResponse(
+            year=year,
+            lookback_days=lookback_days,
+            payment_threshold=payment_threshold,
+            total_clients=0,
+            total_balance=0,
+            total_due=0,
+            active_payers_120d=0,
+            v11_clients=0,
+            placements_tracked=0,
+            placements=[],
+            sample_clients=[],
+        )
+
+    clients_by_id: dict[int, dict[str, Any]] = {}
+    account_ids: list[int] = []
+    for account, client in vintage_rows:
+        payload = clients_by_id.setdefault(
+            client.id,
+            {
+                "client": client,
+                "separation_date": account.fecha_separacion,
+                "statuses": set(),
+                "account_count": 0,
+                "account_numbers": [],
+                "total_balance": 0.0,
+                "total_due": 0.0,
+            },
+        )
+        if account.fecha_separacion and (
+            payload["separation_date"] is None or account.fecha_separacion < payload["separation_date"]
+        ):
+            payload["separation_date"] = account.fecha_separacion
+        payload["statuses"].add(account.estado)
+        payload["account_count"] += 1
+        payload["account_numbers"].append(account.numero_cuenta)
+        payload["total_balance"] = round(float(payload["total_balance"] or 0) + float(account.saldo_total or 0), 2)
+        payload["total_due"] = round(float(payload["total_due"] or 0) + float(account.saldo_mora or 0), 2)
+        account_ids.append(account.id)
+
+    client_ids = list(clients_by_id.keys())
+    current_histories = (
+        db.query(AssignmentHistory)
+        .filter(
+            AssignmentHistory.cliente_id.in_(client_ids),
+            AssignmentHistory.strategy_code == "VAGENCIASEXTERNASINTERNO",
+            AssignmentHistory.is_current.is_(True),
+        )
+        .order_by(AssignmentHistory.start_at.desc(), AssignmentHistory.id.desc())
+        .all()
+    )
+    current_history_by_client: dict[int, AssignmentHistory] = {}
+    for row in current_histories:
+        current_history_by_client.setdefault(row.cliente_id, row)
+
+    movement_histories = (
+        db.query(AssignmentHistory)
+        .filter(
+            AssignmentHistory.cliente_id.in_(client_ids),
+            AssignmentHistory.strategy_code == "VAGENCIASEXTERNASINTERNO",
+        )
+        .order_by(AssignmentHistory.cliente_id.asc(), AssignmentHistory.start_at.asc(), AssignmentHistory.id.asc())
+        .all()
+    )
+    movement_paths: dict[int, list[str]] = defaultdict(list)
+    for row in movement_histories:
+        placement_label = row.placement_code or "SIN_PLACEMENT"
+        if not movement_paths[row.cliente_id] or movement_paths[row.cliente_id][-1] != placement_label:
+            movement_paths[row.cliente_id].append(placement_label)
+
+    recent_payments = (
+        db.query(Pago, Cuenta.cliente_id)
+        .join(Cuenta, Cuenta.id == Pago.cuenta_id)
+        .filter(
+            Cuenta.id.in_(account_ids),
+            Pago.fecha_pago >= cutoff_dt,
+            Pago.monto >= payment_threshold,
+        )
+        .order_by(Pago.fecha_pago.desc(), Pago.id.desc())
+        .all()
+    )
+    payment_summary_by_client: dict[int, dict[str, Any]] = defaultdict(
+        lambda: {
+            "payment_count": 0,
+            "total_paid": 0.0,
+            "max_payment": 0.0,
+            "last_payment_date": None,
+        }
+    )
+    for payment, client_id in recent_payments:
+        summary = payment_summary_by_client[client_id]
+        amount = round(float(payment.monto or 0), 2)
+        summary["payment_count"] += 1
+        summary["total_paid"] = round(summary["total_paid"] + amount, 2)
+        summary["max_payment"] = max(summary["max_payment"], amount)
+        if summary["last_payment_date"] is None or payment.fecha_pago > summary["last_payment_date"]:
+            summary["last_payment_date"] = payment.fecha_pago
+
+    placement_summary: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "placement_code": "SIN_PLACEMENT",
+            "client_count": 0,
+            "paying_clients_120d": 0,
+            "total_paid_120d": 0.0,
+            "total_balance": 0.0,
+            "total_due": 0.0,
+            "v11_eligible_clients": 0,
+            "agencies": defaultdict(
+                lambda: {
+                    "group_id": "SIN_CARTERA",
+                    "channel_scope": None,
+                    "client_count": 0,
+                    "paying_clients_120d": 0,
+                    "total_paid_120d": 0.0,
+                    "total_balance": 0.0,
+                    "total_due": 0.0,
+                    "v11_eligible_clients": 0,
+                }
+            ),
+        }
+    )
+    sample_clients: list[RecoveryVintageClientRead] = []
+
+    for client_id, payload in clients_by_id.items():
+        current_history = current_history_by_client.get(client_id)
+        placement_code = current_history.placement_code if current_history and current_history.placement_code else "SIN_PLACEMENT"
+        group_id = current_history.group_id if current_history and current_history.group_id else "SIN_CARTERA"
+        channel_scope = current_history.channel_scope if current_history else None
+        payment_summary = payment_summary_by_client.get(client_id, {})
+        total_paid = round(float(payment_summary.get("total_paid", 0.0) or 0.0), 2)
+        payment_count = int(payment_summary.get("payment_count", 0) or 0)
+        max_payment = round(float(payment_summary.get("max_payment", 0.0) or 0.0), 2)
+        last_payment_date = payment_summary.get("last_payment_date")
+        qualifies_for_v11 = payment_count > 0
+        current_status = sorted(payload["statuses"])[0] if payload["statuses"] else None
+        total_balance = round(float(payload["total_balance"] or 0), 2)
+        total_due = round(float(payload["total_due"] or 0), 2)
+
+        placement_item = placement_summary[placement_code]
+        placement_item["placement_code"] = placement_code
+        placement_item["client_count"] += 1
+        placement_item["total_paid_120d"] = round(placement_item["total_paid_120d"] + total_paid, 2)
+        placement_item["total_balance"] = round(placement_item["total_balance"] + total_balance, 2)
+        placement_item["total_due"] = round(placement_item["total_due"] + total_due, 2)
+        if payment_count > 0:
+            placement_item["paying_clients_120d"] += 1
+            placement_item["v11_eligible_clients"] += 1
+
+        agency_item = placement_item["agencies"][group_id]
+        agency_item["group_id"] = group_id
+        agency_item["channel_scope"] = channel_scope
+        agency_item["client_count"] += 1
+        agency_item["total_paid_120d"] = round(agency_item["total_paid_120d"] + total_paid, 2)
+        agency_item["total_balance"] = round(agency_item["total_balance"] + total_balance, 2)
+        agency_item["total_due"] = round(agency_item["total_due"] + total_due, 2)
+        if payment_count > 0:
+            agency_item["paying_clients_120d"] += 1
+            agency_item["v11_eligible_clients"] += 1
+
+        client_model = RecoveryVintageClientRead(
+            client_id=client_id,
+            identity_code=format_identity_code(payload["client"].identity_code, payload["client"].id),
+            client_name=f"{payload['client'].nombres} {payload['client'].apellidos}".strip(),
+            separation_date=payload["separation_date"],
+            current_status=current_status,
+            current_placement=placement_code,
+            current_group_id=current_history.group_id if current_history else None,
+            current_scope=current_history.channel_scope if current_history else None,
+            account_count=payload["account_count"],
+            total_balance=total_balance,
+            total_due=total_due,
+            qualifying_payment_count_120d=payment_count,
+            total_paid_120d=total_paid,
+            max_payment_120d=max_payment,
+            last_payment_date=last_payment_date,
+            movement_path=" → ".join(movement_paths.get(client_id, [placement_code])),
+            qualifies_for_v11=qualifies_for_v11,
+        )
+        sample_clients.append(client_model)
+
+    placement_order = {code: index for index, code in enumerate(PLACEMENT_SEQUENCE)}
+    placements: list[RecoveryVintagePlacementRead] = []
+    for item in placement_summary.values():
+        agencies = sorted(
+            (
+                RecoveryVintageAgencyRead(
+                    group_id=agency["group_id"],
+                    channel_scope=agency["channel_scope"],
+                    client_count=agency["client_count"],
+                    paying_clients_120d=agency["paying_clients_120d"],
+                    total_paid_120d=round(float(agency["total_paid_120d"] or 0), 2),
+                    total_balance=round(float(agency["total_balance"] or 0), 2),
+                    total_due=round(float(agency["total_due"] or 0), 2),
+                    v11_eligible_clients=agency["v11_eligible_clients"],
+                    payment_rate_120d=round(
+                        ((float(agency["paying_clients_120d"]) / float(agency["client_count"])) * 100) if agency["client_count"] else 0,
+                        1,
+                    ),
+                )
+                for agency in item["agencies"].values()
+            ),
+            key=lambda agency: (
+                -(agency.payment_rate_120d or 0),
+                -(agency.total_paid_120d or 0),
+                -(agency.paying_clients_120d or 0),
+                agency.group_id,
+            ),
+        )
+        placements.append(
+            RecoveryVintagePlacementRead(
+                placement_code=item["placement_code"],
+                client_count=item["client_count"],
+                paying_clients_120d=item["paying_clients_120d"],
+                total_paid_120d=round(float(item["total_paid_120d"] or 0), 2),
+                total_balance=round(float(item["total_balance"] or 0), 2),
+                total_due=round(float(item["total_due"] or 0), 2),
+                v11_eligible_clients=item["v11_eligible_clients"],
+                best_group_id=agencies[0].group_id if agencies else None,
+                best_group_rate_120d=agencies[0].payment_rate_120d if agencies else 0,
+                lagging_group_id=agencies[-1].group_id if agencies else None,
+                lagging_group_rate_120d=agencies[-1].payment_rate_120d if agencies else 0,
+                agencies=agencies,
+            )
+        )
+    placements.sort(key=lambda item: (placement_order.get(item.placement_code, 999), item.placement_code))
+    sample_clients.sort(
+        key=lambda item: (
+            placement_order.get(item.current_placement or "SIN_PLACEMENT", 999),
+            -(item.total_paid_120d or 0),
+            item.identity_code,
+        )
+    )
+
+    return RecoveryVintageOverviewResponse(
+        year=year,
+        lookback_days=lookback_days,
+        payment_threshold=payment_threshold,
+        total_clients=len(sample_clients),
+        total_balance=round(sum(float(item.total_balance or 0) for item in sample_clients), 2),
+        total_due=round(sum(float(item.total_due or 0) for item in sample_clients), 2),
+        active_payers_120d=sum(1 for item in sample_clients if item.qualifying_payment_count_120d > 0),
+        v11_clients=next((item.client_count for item in placements if item.placement_code == "V11"), 0),
+        placements_tracked=len(placements),
+        placements=placements,
+        sample_clients=sample_clients[:sample_limit],
+    )
 
 
 def resolve_strategy(account: Cuenta, today: datetime) -> str:
@@ -2653,6 +4173,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup() -> None:
+    seed_database_from_init_sql_if_empty()
     ensure_runtime_schema()
 
 
@@ -2776,18 +4297,107 @@ def update_user(
 def list_clients(
     search: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
-    _: Usuario = Depends(get_current_user),
+    current_user: Usuario = Depends(get_current_user),
 ):
+    visible_clients = get_visible_clients_for_user(db, current_user)
+    visible_ids = [item.id for item in visible_clients]
     query = db.query(Cliente)
+    if current_user.rol == "Collector" and is_external_agency_collector(db, current_user):
+        if not visible_ids:
+            return []
+        query = query.filter(Cliente.id.in_(visible_ids))
     if search:
         like_value = f"%{search}%"
         query = query.filter(
             (Cliente.nombres.ilike(like_value))
             | (Cliente.apellidos.ilike(like_value))
-            | (Cliente.codigo_cliente.ilike(like_value))
+            | (Cliente.identity_code.ilike(like_value))
             | (Cliente.dui.ilike(like_value))
         )
     return query.order_by(Cliente.id).all()
+
+
+@app.get("/collector/client-lookup", response_model=Optional[CollectorClientRead])
+def lookup_visible_client(
+    search: str = Query(..., min_length=1),
+    mode: str = Query(default="all"),
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(get_current_user),
+):
+    visible_clients: Optional[list[Cliente]] = None
+    visible_ids: Optional[list[int]] = None
+    if current_user.rol == "Collector" and is_external_agency_collector(db, current_user):
+        visible_clients = get_visible_clients_for_user(db, current_user)
+        visible_ids = [item.id for item in visible_clients]
+        if not visible_ids:
+            return None
+
+    normalized_query = re.sub(r"\D", "", search or "")
+    if normalized_query:
+        target_id = int(normalized_query)
+        exact_query = db.query(Cliente).filter(Cliente.id == target_id)
+        if visible_ids is not None:
+            exact_query = exact_query.filter(Cliente.id.in_(visible_ids))
+        exact_client = exact_query.first()
+        if exact_client:
+            return build_collector_client_snapshot(db, current_user, exact_client)
+
+    if visible_clients is None:
+        visible_clients = get_visible_clients_for_user(db, current_user)
+    if not visible_clients:
+        return None
+    if visible_ids is None:
+        visible_ids = [item.id for item in visible_clients]
+
+    accounts_by_client: dict[int, list[dict[str, Any]]] = {}
+    if visible_ids:
+        account_rows = (
+            db.query(Cuenta.id, Cuenta.cliente_id, Cuenta.numero_cuenta, Cuenta.tipo_producto, Cuenta.subtipo_producto)
+            .filter(Cuenta.cliente_id.in_(visible_ids))
+            .all()
+        )
+        for row in account_rows:
+            account_display = derive_account_display_metadata(
+                type(
+                    "AccountSnapshot",
+                    (),
+                    {
+                        "id": row.id,
+                        "numero_cuenta": row.numero_cuenta,
+                        "tipo_producto": row.tipo_producto,
+                        "subtipo_producto": row.subtipo_producto,
+                        "estado": None,
+                    },
+                )()
+            )
+            accounts_by_client.setdefault(
+                row.cliente_id,
+                [],
+            ).append(
+                {
+                    "numero_cuenta": row.numero_cuenta,
+                    "numero_plastico": account_display["plastic_number"],
+                    "codigo_ubicacion": account_display["location_code"],
+                    "producto_nombre": account_display["product_name"],
+                }
+            )
+
+    scored_matches: list[tuple[int, int]] = []
+    for client in visible_clients:
+        score = get_client_lookup_score(client, search, mode)
+        if score > 0:
+            scored_matches.append((score, client.id))
+
+    if scored_matches:
+        scored_matches.sort(key=lambda item: (-item[0], item[1]))
+        target_client = next((client for client in visible_clients if client.id == scored_matches[0][1]), None)
+        if target_client:
+            return build_collector_client_snapshot(db, current_user, target_client)
+
+    for client in visible_clients:
+        if client_matches_search(client, search, mode, accounts_by_client.get(client.id, [])):
+            return build_collector_client_snapshot(db, current_user, client)
+    return None
 
 
 @app.post("/clients", response_model=ClienteRead, status_code=201)
@@ -2903,11 +4513,10 @@ def create_payment(
     return payment
 
 
-@app.get("/collector/portfolio/me", response_model=CollectorPortfolioResponse)
-def get_collector_portfolio(
-    db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles("Collector")),
-):
+def build_collector_portfolio_response(
+    db: Session,
+    current_user: Usuario,
+) -> CollectorPortfolioResponse:
     assigned_clients = get_assigned_clients_for_collector(db, current_user)[:COLLECTOR_DAILY_WORKLIST_LIMIT]
     assigned_client_ids = [client.id for client in assigned_clients]
     today = datetime.utcnow().date()
@@ -3152,12 +4761,18 @@ def get_collector_portfolio(
 
     for client in assigned_clients:
         accounts = accounts_by_client.get(client.id, [])
+        assignment_snapshot = current_assignment_by_client.get(client.id)
+        contextual_accounts = select_accounts_for_operational_context(accounts, assignment_snapshot, datetime.utcnow())
         account_rows = []
-        strategy_context = derive_client_strategy_context(accounts, datetime.utcnow())
-        primary_strategy = strategy_context["primary_strategy"]
+        strategy_context = derive_client_strategy_context(contextual_accounts, datetime.utcnow())
+        primary_strategy = (
+            assignment_snapshot.strategy_code
+            if assignment_snapshot and assignment_snapshot.strategy_code == "VAGENCIASEXTERNASINTERNO"
+            else strategy_context["primary_strategy"]
+        )
         client_hmr = False
         client_total = 0.0
-        for account in accounts:
+        for account in contextual_accounts:
             cycle_cut_day = get_cycle_cut_day(account)
             due_day = get_due_day(cycle_cut_day)
             strategy = resolve_strategy(account, datetime.utcnow())
@@ -3266,7 +4881,6 @@ def get_collector_portfolio(
             callback_at,
             review_pending,
         )
-        assignment_snapshot = current_assignment_by_client.get(client.id)
         if primary_strategy == "VAGENCIASEXTERNASINTERNO" and assignment_snapshot and assignment_snapshot.group_id:
             sublista_trabajo = assignment_snapshot.group_id
             sublista_descripcion = (
@@ -3286,8 +4900,7 @@ def get_collector_portfolio(
         client_rows.append(
             CollectorClientRead(
                 id=client.id,
-                codigo_cliente=client.codigo_cliente,
-                identity_code=format_identity_code(client.codigo_cliente, client.id),
+                identity_code=format_identity_code(client.identity_code, client.id),
                 dui=client.dui,
                 nombres=client.nombres,
                 apellidos=client.apellidos,
@@ -3357,6 +4970,49 @@ def get_collector_portfolio(
         metrics=metrics,
         clients=client_rows,
     )
+
+
+@app.get("/collector/portfolio/me", response_model=CollectorPortfolioResponse)
+def get_collector_portfolio(
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles("Collector")),
+):
+    return build_collector_portfolio_response(db, current_user)
+
+
+@app.get("/admin/collector-portfolio/{collector_id}", response_model=CollectorPortfolioResponse)
+def get_admin_collector_portfolio(
+    collector_id: int,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(require_roles("Admin")),
+):
+    collector = (
+        db.query(Usuario)
+        .filter(Usuario.id == collector_id, Usuario.rol == "Collector", Usuario.activo.is_(True))
+        .first()
+    )
+    if not collector:
+        raise HTTPException(status_code=404, detail="Collector no encontrado.")
+    return build_collector_portfolio_response(db, collector)
+
+
+@app.get("/supervisor/collector-portfolio/{collector_id}", response_model=CollectorPortfolioResponse)
+def get_supervisor_collector_portfolio(
+    collector_id: int,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles("Supervisor")),
+):
+    collector = (
+        db.query(Usuario)
+        .filter(Usuario.id == collector_id, Usuario.rol == "Collector", Usuario.activo.is_(True))
+        .first()
+    )
+    if not collector:
+        raise HTTPException(status_code=404, detail="Collector no encontrado.")
+    allowed_collectors = {item.id for item in get_collectors_for_supervisor(db, current_user)}
+    if collector.id not in allowed_collectors:
+        raise HTTPException(status_code=403, detail="Ese collector no pertenece a tu equipo.")
+    return build_collector_portfolio_response(db, collector)
 
 
 @app.get("/supervisor/overview/me", response_model=SupervisorOverviewResponse)
@@ -3591,36 +5247,44 @@ def create_collector_management(
     }
 
 
-@app.put("/collector/clients/{client_id}/demographics", response_model=ClienteRead)
-def update_collector_client_demographics(
+@app.get("/collector/clients/{client_id}/demographics", response_model=DemographicProfileRead)
+def get_collector_client_demographics(
     client_id: int,
-    payload: DemographicUpdate,
     db: Session = Depends(get_db),
-    current_user: Usuario = Depends(require_roles("Collector")),
+    current_user: Usuario = Depends(require_roles("Collector", "Supervisor", "Admin")),
 ):
-    assigned_ids = {client.id for client in get_assigned_clients_for_collector(db, current_user)}
-    if client_id not in assigned_ids:
-        raise HTTPException(status_code=403, detail="El cliente no pertenece a tu cartera asignada.")
+    if current_user.rol == "Collector":
+        assigned_ids = {client.id for client in get_assigned_clients_for_collector(db, current_user)}
+        if client_id not in assigned_ids:
+            raise HTTPException(status_code=403, detail="El cliente no pertenece a tu cartera asignada.")
 
     client = db.get(Cliente, client_id)
     if not client:
         raise HTTPException(status_code=404, detail="Cliente no encontrado.")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(client, field, value)
+    return get_client_demographic_profile(db, client)
 
-    db.add(
-        History(
-            entidad="clientes",
-            entidad_id=client_id,
-            accion="CLIENTE_ACTUALIZADO",
-            descripcion="Actualizacion demografica desde panel Collector.",
-            usuario_id=current_user.id,
-        )
-    )
+
+@app.put("/collector/clients/{client_id}/demographics", response_model=DemographicProfileRead)
+def update_collector_client_demographics(
+    client_id: int,
+    payload: DemographicUpdate,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles("Collector", "Supervisor", "Admin")),
+):
+    if current_user.rol == "Collector":
+        assigned_ids = {client.id for client in get_assigned_clients_for_collector(db, current_user)}
+        if client_id not in assigned_ids:
+            raise HTTPException(status_code=403, detail="El cliente no pertenece a tu cartera asignada.")
+
+    client = db.get(Cliente, client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado.")
+
+    profile = save_client_demographic_profile(db, client, payload, current_user)
     db.commit()
     db.refresh(client)
-    return client
+    return profile
 
 
 @app.get("/admin/overview", response_model=AdminOverviewResponse)
@@ -3629,7 +5293,8 @@ def get_admin_overview(
     _: Usuario = Depends(require_roles("Admin")),
 ):
     strategies = db.query(Strategy).filter(Strategy.activa.is_(True)).order_by(Strategy.orden, Strategy.codigo).all()
-    collectors = db.query(Usuario).filter(Usuario.activo.is_(True), Usuario.rol.in_(["Collector", "Supervisor", "Auditor", "GestorUsuarios"])).order_by(Usuario.id).all()
+    collectors = db.query(Usuario).filter(Usuario.activo.is_(True), Usuario.rol == "Collector").order_by(Usuario.id).all()
+    supervisors = db.query(Usuario).filter(Usuario.activo.is_(True), Usuario.rol == "Supervisor").order_by(Usuario.id).all()
     total_clients = db.query(Cliente).count()
     assigned_clients = db.query(WorklistAssignment.cliente_id).filter(WorklistAssignment.activa.is_(True)).distinct().count()
     hmr_clients = (
@@ -3638,14 +5303,882 @@ def get_admin_overview(
         .distinct()
         .count()
     )
+    omnichannel = build_admin_omnichannel_overview(db)
     return AdminOverviewResponse(
         strategies=[StrategyRead.model_validate(item) for item in strategies],
         collectors=[UserRead.model_validate(item) for item in collectors],
+        supervisors=[UserRead.model_validate(item) for item in supervisors],
         total_clients=total_clients,
         assigned_clients=assigned_clients,
         unassigned_clients=max(0, total_clients - assigned_clients),
         hmr_clients=hmr_clients,
-        omnichannel=build_admin_omnichannel_overview(db),
+        omnichannel=omnichannel,
+        alerts=build_admin_alerts(
+            db,
+            total_clients=total_clients,
+            assigned_clients=assigned_clients,
+            omnichannel_overview=omnichannel,
+        ),
+    )
+
+
+@app.get("/admin/recovery-vintage", response_model=RecoveryVintageOverviewResponse)
+def get_admin_recovery_vintage(
+    year: int = Query(..., ge=2000, le=2100),
+    lookback_days: int = Query(default=120, ge=30, le=365),
+    payment_threshold: float = Query(default=10.0, ge=1, le=5000),
+    sample_limit: int = Query(default=20000, ge=10, le=100000),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(require_roles("Admin")),
+):
+    return build_recovery_vintage_overview(
+        db,
+        year=year,
+        lookback_days=lookback_days,
+        payment_threshold=payment_threshold,
+        sample_limit=sample_limit,
+    )
+
+
+@app.get("/admin/recovery-vintage/export")
+def export_admin_recovery_vintage(
+    year: int = Query(..., ge=2000, le=2100),
+    lookback_days: int = Query(default=120, ge=30, le=365),
+    payment_threshold: float = Query(default=10.0, ge=1, le=5000),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(require_roles("Admin")),
+):
+    overview = build_recovery_vintage_overview(
+        db,
+        year=year,
+        lookback_days=lookback_days,
+        payment_threshold=payment_threshold,
+        sample_limit=100000,
+    )
+
+    placement_rows = [
+        {
+            "placement_code": placement.placement_code,
+            "client_count": placement.client_count,
+            "paying_clients_120d": placement.paying_clients_120d,
+            "payment_rate_120d": round((placement.paying_clients_120d / placement.client_count) * 100, 1) if placement.client_count else 0,
+            "total_paid_120d": placement.total_paid_120d,
+            "v11_eligible_clients": placement.v11_eligible_clients,
+            "best_group_id": placement.best_group_id,
+            "best_group_rate_120d": placement.best_group_rate_120d,
+            "lagging_group_id": placement.lagging_group_id,
+            "lagging_group_rate_120d": placement.lagging_group_rate_120d,
+        }
+        for placement in overview.placements
+    ]
+    agency_rows = [
+        {
+            "placement_code": placement.placement_code,
+            "group_id": agency.group_id,
+            "channel_scope": agency.channel_scope,
+            "client_count": agency.client_count,
+            "paying_clients_120d": agency.paying_clients_120d,
+            "payment_rate_120d": agency.payment_rate_120d,
+            "total_paid_120d": agency.total_paid_120d,
+            "v11_eligible_clients": agency.v11_eligible_clients,
+        }
+        for placement in overview.placements
+        for agency in placement.agencies
+    ]
+    client_rows = [
+        {
+            "identity_code": client.identity_code,
+            "client_name": client.client_name,
+            "separation_date": client.separation_date,
+            "current_status": client.current_status,
+            "current_placement": client.current_placement,
+            "current_group_id": client.current_group_id,
+            "current_scope": client.current_scope,
+            "account_count": client.account_count,
+            "qualifying_payment_count_120d": client.qualifying_payment_count_120d,
+            "total_paid_120d": client.total_paid_120d,
+            "max_payment_120d": client.max_payment_120d,
+            "last_payment_date": client.last_payment_date,
+            "movement_path": client.movement_path,
+            "qualifies_for_v11": client.qualifies_for_v11,
+        }
+        for client in overview.sample_clients
+    ]
+
+    workbook = io.BytesIO()
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        pd.DataFrame(
+            [
+                {
+                    "year": overview.year,
+                    "lookback_days": overview.lookback_days,
+                    "payment_threshold": overview.payment_threshold,
+                    "total_clients": overview.total_clients,
+                    "active_payers_120d": overview.active_payers_120d,
+                    "v11_clients": overview.v11_clients,
+                    "placements_tracked": overview.placements_tracked,
+                }
+            ]
+        ).to_excel(writer, index=False, sheet_name="Resumen")
+        pd.DataFrame(placement_rows).to_excel(writer, index=False, sheet_name="Placements")
+        pd.DataFrame(agency_rows).to_excel(writer, index=False, sheet_name="Agencias")
+        pd.DataFrame(client_rows).to_excel(writer, index=False, sheet_name="Clientes")
+    workbook.seek(0)
+
+    return StreamingResponse(
+        workbook,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="recovery_cosecha_{year}.xlsx"'},
+    )
+
+
+@app.get("/admin/recovery-vintage/executive-export")
+def export_admin_recovery_vintage_executive_dashboard(
+    year: int = Query(..., ge=2000, le=2100),
+    compare_years: str = Query(default=""),
+    lookback_days: int = Query(default=120, ge=30, le=365),
+    payment_threshold: float = Query(default=10.0, ge=1, le=5000),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(require_roles("Admin")),
+):
+    overview = build_recovery_vintage_overview(
+        db,
+        year=year,
+        lookback_days=lookback_days,
+        payment_threshold=payment_threshold,
+        sample_limit=100000,
+    )
+
+    parsed_compare_years = [int(value.strip()) for value in (compare_years or "").split(",") if value.strip().isdigit()]
+    compare_response = build_recovery_vintage_compare(
+        db,
+        years=parsed_compare_years or [year, max(RECOVERY_VINTAGE_START_YEAR, year - 1)],
+        lookback_days=lookback_days,
+        payment_threshold=payment_threshold,
+    )
+
+    placements = overview.placements or []
+    total_recovered = round(sum(float(item.total_paid_120d or 0) for item in placements), 2)
+    placement_leader = max(placements, key=lambda item: float(item.total_paid_120d or 0), default=None)
+    placement_laggard = min(placements, key=lambda item: float(item.total_paid_120d or 0), default=None)
+    best_vintage = max(
+        compare_response.items,
+        key=lambda item: (float(item.active_payers_120d or 0) / max(float(item.total_clients or 1), 1)),
+        default=None,
+    )
+
+    executive_rows = [
+        {"indicador": "Cosecha analizada", "valor": year},
+        {"indicador": "Clientes separados", "valor": overview.total_clients},
+        {"indicador": f"Clientes con pago >= USD {payment_threshold:.2f} / {lookback_days} días", "valor": overview.active_payers_120d},
+        {"indicador": "Clientes hoy en V11", "valor": overview.v11_clients},
+        {"indicador": "Placements activos", "valor": overview.placements_tracked},
+        {"indicador": "Monto recuperado visible", "valor": total_recovered},
+        {"indicador": "Placement líder", "valor": placement_leader.placement_code if placement_leader else "N/D"},
+        {"indicador": "Placement rezagado", "valor": placement_laggard.placement_code if placement_laggard else "N/D"},
+        {"indicador": "Mejor añada comparada", "valor": best_vintage.year if best_vintage else "N/D"},
+    ]
+
+    placement_rows = [
+        {
+            "placement_code": placement.placement_code,
+            "client_count": placement.client_count,
+            "paying_clients_120d": placement.paying_clients_120d,
+            "payment_rate_120d": round((placement.paying_clients_120d / placement.client_count) * 100, 1) if placement.client_count else 0,
+            "total_paid_120d": float(placement.total_paid_120d or 0),
+            "v11_eligible_clients": placement.v11_eligible_clients,
+            "best_group_id": placement.best_group_id,
+            "lagging_group_id": placement.lagging_group_id,
+        }
+        for placement in placements
+    ]
+
+    compare_rows = [
+        {
+            "year": item.year,
+            "total_clients": item.total_clients,
+            "active_payers_120d": item.active_payers_120d,
+            "payment_rate_120d": round((item.active_payers_120d / item.total_clients) * 100, 1) if item.total_clients else 0,
+            "placements_tracked": item.placements_tracked,
+            "placement_distribution": ", ".join(f"{code}: {count}" for code, count in (item.placement_distribution or {}).items()),
+        }
+        for item in compare_response.items
+    ]
+
+    client_rows = [
+        {
+            "identity_code": client.identity_code,
+            "client_name": client.client_name,
+            "separation_date": client.separation_date,
+            "current_placement": client.current_placement,
+            "current_group_id": client.current_group_id,
+            "total_paid_120d": float(client.total_paid_120d or 0),
+            "qualifying_payment_count_120d": client.qualifying_payment_count_120d,
+            "movement_path": client.movement_path,
+        }
+        for client in overview.sample_clients
+    ]
+
+    workbook = io.BytesIO()
+    with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+        pd.DataFrame(executive_rows).to_excel(writer, index=False, sheet_name="Resumen Ejecutivo")
+        pd.DataFrame(placement_rows).to_excel(writer, index=False, sheet_name="Placement Recovery")
+        pd.DataFrame(compare_rows).to_excel(writer, index=False, sheet_name="Comparativo Añadas")
+        pd.DataFrame(client_rows).to_excel(writer, index=False, sheet_name="Muestra Clientes")
+    workbook.seek(0)
+
+    return StreamingResponse(
+        workbook,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="dashboard_recovery_cosecha_{year}.xlsx"'},
+    )
+
+
+@app.get("/admin/recovery-vintage/compare", response_model=RecoveryVintageCompareResponse)
+def compare_admin_recovery_vintage(
+    years: str = Query(..., description="Lista de años separada por comas"),
+    lookback_days: int = Query(default=120, ge=30, le=365),
+    payment_threshold: float = Query(default=10.0, ge=1, le=5000),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(require_roles("Admin")),
+):
+    parsed_years = [int(value.strip()) for value in years.split(",") if value.strip().isdigit()]
+    if not parsed_years:
+        raise HTTPException(status_code=400, detail="Debes indicar al menos un año válido para comparar.")
+    return build_recovery_vintage_compare(
+        db,
+        years=parsed_years,
+        lookback_days=lookback_days,
+        payment_threshold=payment_threshold,
+    )
+
+
+@app.get("/admin/executive-log", response_model=list[AdminHistoryEventRead])
+def get_admin_executive_log(
+    limit: int = Query(default=80, ge=10, le=200),
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(require_roles("Admin")),
+):
+    return build_admin_executive_log(db, limit=limit)
+
+
+def find_user_by_identifier(db: Session, raw_identifier: str) -> Optional[Usuario]:
+    identifier = (raw_identifier or "").strip()
+    if not identifier:
+        return None
+    lowered = identifier.lower()
+    return (
+        db.query(Usuario)
+        .filter(
+            (func.lower(Usuario.username) == lowered)
+            | (func.lower(Usuario.nombre) == lowered)
+            | (func.lower(func.replace(Usuario.nombre, " ", "")) == lowered.replace(" ", ""))
+        )
+        .first()
+    )
+
+
+def normalize_admin_assistant_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    without_accents = "".join(char for char in normalized if not unicodedata.combining(char))
+    return re.sub(r"\s+", " ", without_accents).strip().lower()
+
+
+def validate_admin_sql_query(raw_query: str) -> str:
+    normalized = (raw_query or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="La consulta no puede estar vacía.")
+    compact = re.sub(r"\s+", " ", normalized).strip()
+    lowered = compact.lower()
+    if ";" in compact.rstrip(";"):
+        raise HTTPException(status_code=400, detail="Solo se permite una sentencia por consulta.")
+    blocked_tokens = [
+        "insert ", "update ", "delete ", "drop ", "alter ", "truncate ", "create ",
+        "grant ", "revoke ", "comment ", "vacuum ", "analyze ", "refresh ",
+        "merge ", "call ", "copy ", "set ", "reset ", "begin", "commit", "rollback",
+        "lock ", "do ", "execute ", "prepare ", "deallocate ", "listen ", "notify ",
+        "pg_sleep", "dblink", "postgres_fdw",
+    ]
+    if any(token in lowered for token in blocked_tokens):
+        raise HTTPException(status_code=400, detail="Solo se permiten consultas SQL de lectura.")
+    if not (lowered.startswith("select ") or lowered.startswith("with ") or lowered.startswith("explain select ") or lowered.startswith("explain with ")):
+        raise HTTPException(status_code=400, detail="La consulta debe iniciar con SELECT, WITH o EXPLAIN.")
+    return compact.rstrip(";")
+
+
+def build_daily_operational_simulation_preview(
+    db: Session,
+    fmora1_clients: int = 250,
+    preventivo_clients: int = 120,
+    recovery_clients: int = 1000,
+) -> dict[str, Any]:
+    today = date.today()
+    simulation_key = f"SIM-DAY-{today.isoformat()}"
+    already_applied_today = (
+        db.query(History)
+        .filter(
+            History.entidad == "system",
+            History.accion == "SIMULACION_DIA_OPERATIVO",
+            History.descripcion.ilike(f"%{simulation_key}%"),
+        )
+        .first()
+        is not None
+    )
+    aged_accounts = db.query(Cuenta).filter(
+        Cuenta.dias_mora > 0,
+        Cuenta.estado.in_(["ACTIVA", "VIGENTE", "LIQUIDADO", "Z"]),
+    ).count()
+    payable_accounts = (
+        db.query(Cuenta.id, Cuenta.saldo_total)
+        .filter(Cuenta.dias_mora > 0, Cuenta.saldo_total > 0, Cuenta.estado.in_(["ACTIVA", "VIGENTE", "LIQUIDADO", "Z"]))
+        .order_by(Cuenta.id.asc())
+        .all()
+    )
+    simulated_payments = 0
+    fully_cured_accounts = 0
+    for index, account in enumerate(payable_accounts, start=1):
+        if index % 11 == 0 or index % 7 == 0 or index % 5 == 0:
+            simulated_payments += 1
+        if index % 11 == 0 and float(account.saldo_total or 0) > 0:
+            fully_cured_accounts += 1
+
+    recovery_rotations = (
+        db.query(WorklistAssignment.cliente_id)
+        .join(Cuenta, Cuenta.cliente_id == WorklistAssignment.cliente_id)
+        .filter(
+            WorklistAssignment.activa.is_(True),
+            Cuenta.dias_mora > 180,
+            Cuenta.estado.in_(["LIQUIDADO", "Z"]),
+        )
+        .distinct()
+        .count()
+    )
+
+    total_clients = db.query(Cliente).count()
+    total_accounts = db.query(Cuenta).count()
+    warnings: list[str] = []
+    if already_applied_today:
+        warnings.append("La simulación del día ya fue aplicada previamente. Si deseas volver a correrla, primero tendrás que habilitar una ejecución forzada.")
+    if recovery_clients > 2500:
+        warnings.append("La carga Recovery solicitada es alta; conviene revisar placement y asignaciones antes de aplicarla.")
+    if simulated_payments > max(2000, aged_accounts * 0.35):
+        warnings.append("El volumen proyectado de pagos es relevante; úsalo para validar campañas y movimientos de estrategia antes de ejecutar.")
+
+    return {
+        "simulation_key": simulation_key,
+        "already_applied_today": already_applied_today,
+        "aged_accounts": aged_accounts,
+        "inserted_fmora1_clients": fmora1_clients,
+        "inserted_preventivo_clients": preventivo_clients,
+        "inserted_recovery_clients": recovery_clients,
+        "simulated_payments": simulated_payments,
+        "fully_cured_accounts": fully_cured_accounts,
+        "recovery_rotations": recovery_rotations,
+        "projected_total_clients": total_clients + fmora1_clients + preventivo_clients + recovery_clients,
+        "projected_total_accounts": total_accounts + fmora1_clients + preventivo_clients + recovery_clients,
+        "warnings": warnings,
+        "message": "Previsualización generada. No se modificó ninguna tabla ni se aplicó ningún movimiento en la base.",
+    }
+
+
+def build_recovery_vintage_compare(
+    db: Session,
+    years: list[int],
+    lookback_days: int = 120,
+    payment_threshold: float = 10.0,
+) -> RecoveryVintageCompareResponse:
+    unique_years = sorted({int(year) for year in years if RECOVERY_VINTAGE_START_YEAR <= int(year) <= 2100}, reverse=True)
+    items: list[RecoveryVintageCompareItem] = []
+    for year in unique_years:
+        overview = build_recovery_vintage_overview(
+            db,
+            year=year,
+            lookback_days=lookback_days,
+            payment_threshold=payment_threshold,
+            sample_limit=2000,
+        )
+        items.append(
+            RecoveryVintageCompareItem(
+                year=year,
+                total_clients=overview.total_clients,
+                total_balance=overview.total_balance,
+                total_due=overview.total_due,
+                active_payers_120d=overview.active_payers_120d,
+                placements_tracked=overview.placements_tracked,
+                placement_distribution={placement.placement_code: placement.client_count for placement in overview.placements},
+            )
+        )
+    return RecoveryVintageCompareResponse(years=unique_years, items=items)
+
+
+def build_admin_executive_log(db: Session, limit: int = 80) -> list[AdminHistoryEventRead]:
+    rows = (
+        db.query(History, Usuario.nombre)
+        .outerjoin(Usuario, Usuario.id == History.usuario_id)
+        .filter(
+            History.accion.in_(
+                [
+                    "SIMULACION_DIA_OPERATIVO",
+                    "OMNICHANNEL_CONFIG_UPDATED",
+                    "EMAIL_DEMO_SENT",
+                    "SMS_DEMO_SENT",
+                    "WHATSAPP_DEMO_SENT",
+                    "CALLBOT_DEMO_SENT",
+                    "WORKLIST_GROUP_ASSIGNED",
+                    "WORKLIST_GROUP_UNASSIGNED",
+                    "SUPERVISOR_ASSIGNMENT_CREATED",
+                    "SUPERVISOR_ASSIGNMENT_REMOVED",
+                    "DEMOGRAFIA_ACTUALIZADA",
+                ]
+            )
+        )
+        .order_by(History.created_at.desc(), History.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        AdminHistoryEventRead(
+            id=history.id,
+            entidad=history.entidad,
+            entidad_id=history.entidad_id,
+            accion=history.accion,
+            descripcion=history.descripcion,
+            usuario_id=history.usuario_id,
+            usuario_nombre=user_name,
+            created_at=history.created_at,
+        )
+        for history, user_name in rows
+    ]
+
+
+def resolve_omnichannel_client_context(
+    db: Session,
+    client_id: Optional[int],
+    requested_strategy_code: Optional[str],
+) -> dict[str, Any]:
+    client = db.get(Cliente, client_id) if client_id else None
+    strategy_code = (requested_strategy_code or "").upper() or "FMORA1"
+    client_name = "Cliente"
+    total_due = 0.0
+    minimum_payment = 0.0
+    account_reference = "sin referencia"
+    account_last4 = "****"
+    today = datetime.utcnow().date()
+    due_date = today + timedelta(days=5)
+
+    if client:
+        client_name = f"{client.nombres} {client.apellidos}"
+        accounts = (
+            db.query(Cuenta)
+            .filter(Cuenta.cliente_id == client.id)
+            .order_by(Cuenta.dias_mora.desc(), Cuenta.id.asc())
+            .all()
+        )
+        if accounts:
+            strategy_context = derive_client_strategy_context(accounts, datetime.utcnow())
+            lead_account = strategy_context["lead_account"] or accounts[0]
+            strategy_code = strategy_context["primary_strategy"] or strategy_code
+            total_due = round(float(lead_account.saldo_mora or 0), 2)
+            minimum_payment = round(float(calculate_minimum_payment(lead_account) or 0), 2)
+            account_reference = lead_account.numero_cuenta or "sin referencia"
+            account_last4 = account_reference[-4:] if account_reference and account_reference != "sin referencia" else "****"
+            if lead_account.fecha_vencimiento and lead_account.fecha_vencimiento >= today:
+                due_date = lead_account.fecha_vencimiento
+
+    return {
+        "client": client,
+        "strategy_code": strategy_code,
+        "client_name": client_name,
+        "total_due": total_due,
+        "minimum_payment": minimum_payment,
+        "account_reference": account_reference,
+        "account_last4": account_last4,
+        "due_date_str": due_date.strftime("%d/%m/%Y"),
+    }
+
+
+def parse_admin_assistant_message(message: str) -> dict[str, Any]:
+    raw = (message or "").strip()
+    normalized = normalize_admin_assistant_text(raw)
+    explain_only = any(
+        token in normalized
+        for token in [
+            "explicame",
+            "explica",
+            "como hacerlo",
+            "como lo hago",
+            "como se hace",
+            "ayudame con",
+            "ayuda con",
+        ]
+    )
+
+    if any(
+        token in normalized
+        for token in [
+            "que puedes hacer",
+            "que haces",
+            "que soportas",
+            "como funciona el agente",
+            "ayuda",
+            "ayudame",
+            "explicame como hacerlo",
+        ]
+    ):
+        return {"action_code": "help"}
+
+    year_match = re.search(r"(20\d{2})", raw)
+    if ("cosecha" in normalized or "recovery" in normalized) and year_match:
+        return {"action_code": "recovery_vintage", "year": int(year_match.group(1)), "explain_only": explain_only}
+
+    if any(token in normalized for token in ["simula", "simular", "simulacion", "simulacion diaria"]):
+        fmora1_match = re.search(r"(?:fmora1\s+(\d+)|(\d+)\s+fmora1)", normalized)
+        preventivo_match = re.search(r"(?:preventivo\s+(\d+)|(\d+)\s+preventivo)", normalized)
+        recovery_match = re.search(r"(?:recovery\s+(\d+)|(\d+)\s+recovery)", normalized)
+        return {
+            "action_code": "daily_simulation",
+            "fmora1_clients": int((fmora1_match.group(1) or fmora1_match.group(2))) if fmora1_match else 250,
+            "preventivo_clients": int((preventivo_match.group(1) or preventivo_match.group(2))) if preventivo_match else 120,
+            "recovery_clients": int((recovery_match.group(1) or recovery_match.group(2))) if recovery_match else 1000,
+            "explain_only": explain_only,
+        }
+
+    group_match = re.search(
+        r"(asigna|asignar|agrega|agregar|vincula|vincular|pone|poner|pon|desasigna|desasignar|quita|quitar|retira|retirar)\s+(?:la\s+)?(?:cartera|grupo|lista)\s+([A-Za-z0-9]+)\s+(?:al|a|para|del|de)\s+(?:usuario|collector|gestor)?\s*([A-Za-z0-9_]+)",
+        raw,
+        re.IGNORECASE,
+    )
+    if group_match:
+        is_assign = group_match.group(1).lower() in {"asigna", "asignar", "agrega", "agregar", "vincula", "vincular", "pone", "poner", "pon"}
+        return {
+            "action_code": "assign_group" if is_assign else "unassign_group",
+            "group_id": group_match.group(2).upper(),
+            "user_identifier": group_match.group(3),
+            "explain_only": explain_only,
+        }
+
+    supervisor_match = re.search(
+        r"(asigna|asignar|agrega|agregar|vincula|vincular|pone|poner|pon|desasigna|desasignar|quita|quitar|retira|retirar)\s+(?:collector|usuario|gestor)?\s*([A-Za-z0-9_]+)\s+(?:al|a|para|del|de)\s+supervisor\s+([A-Za-z0-9_]+)",
+        raw,
+        re.IGNORECASE,
+    )
+    if supervisor_match:
+        is_assign = supervisor_match.group(1).lower() in {"asigna", "asignar", "agrega", "agregar", "vincula", "vincular", "pone", "poner", "pon"}
+        return {
+            "action_code": "assign_supervisor" if is_assign else "unassign_supervisor",
+            "collector_identifier": supervisor_match.group(2),
+            "supervisor_identifier": supervisor_match.group(3),
+            "explain_only": explain_only,
+        }
+
+    toggle_match = re.search(r"(activa|desactiva|habilita|deshabilita|enciende|apaga)\s+(email|whatsapp|callbot)", normalized)
+    if toggle_match:
+        return {
+            "action_code": "toggle_channel",
+            "channel": toggle_match.group(2),
+            "enabled": toggle_match.group(1) in {"activa", "habilita", "enciende"},
+            "explain_only": explain_only,
+        }
+
+    groups_match = re.search(
+        r"(?:muestra|ver|consulta|listar|listame|que grupos tiene|que carteras tiene).*(?:usuario|collector|gestor)?\s*([A-Za-z0-9_]+)",
+        raw,
+        re.IGNORECASE,
+    )
+    if groups_match:
+        return {"action_code": "show_user_groups", "user_identifier": groups_match.group(1), "explain_only": explain_only}
+
+    return {"action_code": "unsupported"}
+
+
+@app.post("/admin/assistant/chat", response_model=AdminAssistantResponse)
+def admin_assistant_chat(
+    payload: AdminAssistantRequest,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles("Admin")),
+):
+    parsed = parse_admin_assistant_message(payload.message)
+    action_code = parsed["action_code"]
+
+    if action_code == "help":
+        return AdminAssistantResponse(
+            action_code="help",
+            interpreted_message="Mostrar ayuda del agente administrativo",
+            response_message=(
+                "Puedo ayudarte con 1) cosechas Recovery por año, 2) simulación diaria, 3) asignar o quitar carteras a un usuario, "
+                "4) asignar o retirar collectors de un supervisor, 5) activar o desactivar email, WhatsApp o callbot, y 6) consultar "
+                "qué grupos tiene un usuario. Ejemplos: `ver cosecha recovery 2025`, `asigna cartera V13A082 al usuario collector1`, "
+                "`quita collector2 del supervisor supervisor1`, `activa email`, `simula fmora1 300 preventivo 120 recovery 900`, "
+                "`qué grupos tiene collector1`."
+            ),
+            requires_confirmation=False,
+            can_apply=False,
+            executed=False,
+        )
+
+    if action_code == "unsupported":
+        return AdminAssistantResponse(
+            action_code="unsupported",
+            interpreted_message=payload.message,
+            response_message=(
+                "No interpreté bien la instrucción. Puedo ayudarte con cosechas Recovery, simulación diaria, asignación de grupos, "
+                "supervisores y canales omnicanal. Si quieres, prueba con frases como `ver cosecha recovery 2025`, "
+                "`asigna cartera V13A082 al usuario collector1` o `explícame cómo activar email`."
+            ),
+            requires_confirmation=False,
+            can_apply=False,
+            executed=False,
+        )
+
+    if action_code == "recovery_vintage":
+        overview = build_recovery_vintage_overview(db, year=parsed["year"], sample_limit=20000)
+        return AdminAssistantResponse(
+            action_code=action_code,
+            interpreted_message=f"Consultar cosecha Recovery {parsed['year']}",
+            response_message=(
+                f"{'Te explico cómo leerla y además ' if parsed.get('explain_only') else ''}"
+                f"preparé la lectura de la cosecha Recovery {parsed['year']}. Ya puedes revisar placements, agencias y clientes."
+            ),
+            executed=True,
+            data={"recovery_vintage": overview.model_dump(mode="json")},
+        )
+
+    if action_code == "show_user_groups":
+        user = find_user_by_identifier(db, parsed["user_identifier"])
+        if not user:
+            raise HTTPException(status_code=404, detail="No encontré ese usuario.")
+        groups = get_worklist_groups_for_user(db, user.id)
+        return AdminAssistantResponse(
+            action_code=action_code,
+            interpreted_message=f"Consultar grupos de {user.username}",
+            response_message=(
+                f"{user.username} tiene {len(groups)} grupos visibles en este momento."
+                if not parsed.get("explain_only")
+                else f"{user.username} tiene {len(groups)} grupos visibles. Te los muestro para que desde el panel admin puedas decidir si asignas, desasignas o cambias la cobertura."
+            ),
+            executed=True,
+            data={"user": UserRead.model_validate(user).model_dump(mode='json'), "groups": [group.model_dump(mode='json') for group in groups]},
+        )
+
+    if action_code == "toggle_channel":
+        channel = parsed["channel"]
+        enabled = parsed["enabled"]
+        if parsed.get("explain_only") and not payload.apply_change:
+            return AdminAssistantResponse(
+                action_code=action_code,
+                interpreted_message=f"{'Activar' if enabled else 'Desactivar'} {channel}",
+                response_message=(
+                    f"Para {'activar' if enabled else 'desactivar'} {channel} el agente primero prepara el cambio y luego te pide confirmación. "
+                    f"Si quieres que lo aplique ahora, envíame la misma instrucción sin pedir explicación o pulsa confirmar cuando aparezca la propuesta."
+                ),
+                requires_confirmation=False,
+                can_apply=False,
+                executed=False,
+                data={"channel": channel, "enabled": enabled},
+            )
+        if not payload.apply_change:
+            return AdminAssistantResponse(
+                action_code=action_code,
+                interpreted_message=f"{'Activar' if enabled else 'Desactivar'} {channel}",
+                response_message=f"Voy a {'activar' if enabled else 'desactivar'} {channel} en el centro omnicanal. Si estás listo, confirma para aplicar el cambio.",
+                requires_confirmation=True,
+                can_apply=True,
+                executed=False,
+                data={"channel": channel, "enabled": enabled},
+            )
+        cfg = get_omnichannel_settings(db)
+        channel_field_map = {
+            "email": "email_enabled",
+            "whatsapp": "whatsapp_bot_enabled",
+            "callbot": "callbot_enabled",
+        }
+        field_name = channel_field_map[channel]
+        cfg[field_name] = enabled
+        updated = update_admin_omnichannel_config(AdminOmnichannelConfigUpdate(**cfg), db, current_user)
+        return AdminAssistantResponse(
+            action_code=action_code,
+            interpreted_message=f"{'Activar' if enabled else 'Desactivar'} {channel}",
+            response_message=f"{channel.capitalize()} quedó {'activo' if enabled else 'inactivo'} en la configuración omnicanal.",
+            requires_confirmation=False,
+            can_apply=False,
+            executed=True,
+            data={"omnichannel": updated},
+        )
+
+    if action_code in {"assign_group", "unassign_group"}:
+        user = find_user_by_identifier(db, parsed["user_identifier"])
+        if not user:
+            raise HTTPException(status_code=404, detail="No encontré el usuario indicado.")
+        matching = (
+            db.query(AssignmentHistory)
+            .filter(AssignmentHistory.is_current.is_(True), AssignmentHistory.group_id == parsed["group_id"])
+            .first()
+        )
+        if not matching:
+            raise HTTPException(status_code=404, detail="No encontré esa cartera o grupo.")
+        request_payload = {
+            "user_id": user.id,
+            "group_id": parsed["group_id"],
+            "strategy_code": matching.strategy_code,
+            "placement_code": matching.placement_code,
+        }
+        if action_code == "assign_group":
+            request_payload["reassign_existing"] = True
+        if parsed.get("explain_only") and not payload.apply_change:
+            return AdminAssistantResponse(
+                action_code=action_code,
+                interpreted_message=f"{'Asignar' if action_code == 'assign_group' else 'Desasignar'} grupo {parsed['group_id']} a {user.username}",
+                response_message=(
+                    f"Para {'asignar' if action_code == 'assign_group' else 'desasignar'} una cartera, el agente identifica el grupo {parsed['group_id']}, "
+                    f"valida a qué estrategia y placement pertenece y prepara el cambio para {user.username}. Luego te pide confirmación antes de aplicarlo."
+                ),
+                requires_confirmation=False,
+                can_apply=False,
+                executed=False,
+                data=request_payload,
+            )
+        if not payload.apply_change:
+            return AdminAssistantResponse(
+                action_code=action_code,
+                interpreted_message=f"{'Asignar' if action_code == 'assign_group' else 'Desasignar'} grupo {parsed['group_id']} a {user.username}",
+                response_message=f"Listo para {'asignar' if action_code == 'assign_group' else 'desasignar'} la cartera {parsed['group_id']} {'a' if action_code == 'assign_group' else 'de'} {user.username}. Confirma para aplicar.",
+                requires_confirmation=True,
+                can_apply=True,
+                executed=False,
+                data=request_payload,
+            )
+        result = (
+            assign_worklist_group(WorklistGroupAssignRequest(**request_payload), db, current_user)
+            if action_code == "assign_group"
+            else unassign_worklist_group(WorklistGroupUnassignRequest(**request_payload), db, current_user)
+        )
+        return AdminAssistantResponse(
+            action_code=action_code,
+            interpreted_message=f"{'Asignar' if action_code == 'assign_group' else 'Desasignar'} grupo {parsed['group_id']} a {user.username}",
+            response_message=result.get("message") or "Cambio aplicado correctamente.",
+            executed=True,
+            data=result,
+        )
+
+    if action_code in {"assign_supervisor", "unassign_supervisor"}:
+        collector = find_user_by_identifier(db, parsed["collector_identifier"])
+        supervisor = find_user_by_identifier(db, parsed["supervisor_identifier"])
+        if not collector or not supervisor:
+            raise HTTPException(status_code=404, detail="No encontré el collector o supervisor indicado.")
+        request_payload = {"collector_id": collector.id, "supervisor_id": supervisor.id}
+        if parsed.get("explain_only") and not payload.apply_change:
+            return AdminAssistantResponse(
+                action_code=action_code,
+                interpreted_message=f"{'Asignar' if action_code == 'assign_supervisor' else 'Desasignar'} {collector.username} {'a' if action_code == 'assign_supervisor' else 'de'} {supervisor.username}",
+                response_message=(
+                    f"El flujo es: identificar al collector {collector.username}, ubicar al supervisor {supervisor.username}, "
+                    f"preparar la relación y pedirte confirmación antes de grabarla en el sistema."
+                ),
+                requires_confirmation=False,
+                can_apply=False,
+                executed=False,
+                data=request_payload,
+            )
+        if not payload.apply_change:
+            return AdminAssistantResponse(
+                action_code=action_code,
+                interpreted_message=f"{'Asignar' if action_code == 'assign_supervisor' else 'Desasignar'} {collector.username} {'a' if action_code == 'assign_supervisor' else 'de'} {supervisor.username}",
+                response_message=f"Listo para {'asignar' if action_code == 'assign_supervisor' else 'retirar'} a {collector.username} {'bajo' if action_code == 'assign_supervisor' else 'de'} {supervisor.username}. Confirma para aplicar.",
+                requires_confirmation=True,
+                can_apply=True,
+                executed=False,
+                data=request_payload,
+            )
+        result = (
+            assign_collector_to_supervisor(SupervisorCollectorAssignRequest(**request_payload), db, current_user)
+            if action_code == "assign_supervisor"
+            else unassign_collector_from_supervisor(SupervisorCollectorAssignRequest(**request_payload), db, current_user)
+        )
+        return AdminAssistantResponse(
+            action_code=action_code,
+            interpreted_message=f"{'Asignar' if action_code == 'assign_supervisor' else 'Desasignar'} {collector.username} {'a' if action_code == 'assign_supervisor' else 'de'} {supervisor.username}",
+            response_message=result.get("message") or "Cambio aplicado correctamente.",
+            executed=True,
+            data=result,
+        )
+
+    if action_code == "daily_simulation":
+        if parsed.get("explain_only") and not payload.apply_change:
+            return AdminAssistantResponse(
+                action_code=action_code,
+                interpreted_message="Simular día operativo",
+                response_message=(
+                    "La simulación diaria envejece cuentas, genera pagos, mueve clientes entre estrategias y rota placements Recovery. "
+                    f"Con tu instrucción actual quedaría FMORA1={parsed['fmora1_clients']}, PREVENTIVO={parsed['preventivo_clients']} y RECOVERY={parsed['recovery_clients']}."
+                ),
+                requires_confirmation=False,
+                can_apply=False,
+                executed=False,
+                data=parsed,
+            )
+        if not payload.apply_change:
+            return AdminAssistantResponse(
+                action_code=action_code,
+                interpreted_message="Simular día operativo",
+                response_message=f"Listo para simular un día operativo con FMORA1={parsed['fmora1_clients']}, PREVENTIVO={parsed['preventivo_clients']} y RECOVERY={parsed['recovery_clients']}. Confirma para ejecutar.",
+                requires_confirmation=True,
+                can_apply=True,
+                executed=False,
+                data=parsed,
+            )
+        result = run_admin_daily_rollover(
+            AdminDailySimulationRequest(
+                fmora1_clients=parsed["fmora1_clients"],
+                preventivo_clients=parsed["preventivo_clients"],
+                recovery_clients=parsed["recovery_clients"],
+            ),
+            db,
+            current_user,
+        )
+        return AdminAssistantResponse(
+            action_code=action_code,
+            interpreted_message="Simular día operativo",
+            response_message=result.message,
+            executed=True,
+            data=result.model_dump(mode="json"),
+        )
+
+    raise HTTPException(status_code=400, detail="No pude procesar la instrucción solicitada.")
+
+
+@app.post("/admin/sql/query", response_model=AdminSqlQueryResponse)
+def run_admin_sql_query(
+    payload: AdminSqlQueryRequest,
+    current_user: Usuario = Depends(require_roles("Admin")),
+):
+    normalized_query = validate_admin_sql_query(payload.query)
+    is_explain_query = normalized_query.lower().startswith("explain ")
+    started_at = datetime.now(timezone.utc)
+    with get_readonly_connection() as connection:
+        connection.execute(text("SET statement_timeout = 15000"))
+        connection.execute(text("SET lock_timeout = 3000"))
+        connection.execute(text("SET idle_in_transaction_session_timeout = 15000"))
+        connection.execute(text("SET default_transaction_read_only = on"))
+        statement = (
+            text(normalized_query)
+            if is_explain_query
+            else text(f"SELECT * FROM ({normalized_query}) AS admin_sql_query LIMIT :max_rows_plus_one")
+        )
+        params = {} if is_explain_query else {"max_rows_plus_one": payload.max_rows + 1}
+        result = connection.execute(statement, params)
+        fetched_rows = result.mappings().all()
+        columns = list(result.keys())
+
+    truncated = len(fetched_rows) > payload.max_rows
+    visible_rows = fetched_rows[: payload.max_rows]
+    duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+    return AdminSqlQueryResponse(
+        columns=columns,
+        rows=[dict(row) for row in visible_rows],
+        row_count=len(visible_rows),
+        truncated=truncated,
+        duration_ms=duration_ms,
+        normalized_query=normalized_query,
     )
 
 
@@ -3730,6 +6263,77 @@ def update_admin_omnichannel_config(
     return build_admin_omnichannel_overview(db)
 
 
+@app.post("/admin/omnichannel/preview", response_model=AdminOmnichannelPreviewResponse)
+def preview_admin_omnichannel_message(
+    payload: dict,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(require_roles("Admin")),
+):
+    channel = str(payload.get("channel") or "").lower().strip()
+    client_id = int(payload["client_id"]) if payload.get("client_id") not in {None, ""} else None
+    strategy_code = payload.get("strategy_code")
+    custom_message = payload.get("custom_message")
+    custom_subject = payload.get("custom_subject")
+    custom_html = payload.get("custom_html")
+    if channel not in {"email", "sms", "whatsapp"}:
+        raise HTTPException(status_code=400, detail="Canal no soportado para previsualización.")
+
+    context = resolve_omnichannel_client_context(db, client_id, strategy_code)
+    client = context["client"]
+
+    if channel == "email":
+        subject, html = build_collection_email_html(
+            client_name=context["client_name"],
+            strategy_code=context["strategy_code"],
+            total_due=context["total_due"],
+            minimum_payment=context["minimum_payment"],
+            account_reference=context["account_reference"],
+            due_date_str=context["due_date_str"],
+        )
+        return AdminOmnichannelPreviewResponse(
+            channel="email",
+            strategy_code=context["strategy_code"],
+            client_name=context["client_name"],
+            identity_code=client.identity_code if client else None,
+            account_reference=context["account_reference"],
+            subject=custom_subject or subject,
+            html=custom_html or html,
+        )
+
+    if channel == "sms":
+        message = custom_message or build_collection_sms(
+            client_name=context["client_name"],
+            strategy_code=context["strategy_code"],
+            total_due=context["total_due"],
+            minimum_payment=context["minimum_payment"],
+            account_last4=context["account_last4"],
+            due_date_str=context["due_date_str"],
+        )
+        return AdminOmnichannelPreviewResponse(
+            channel="sms",
+            strategy_code=context["strategy_code"],
+            client_name=context["client_name"],
+            identity_code=client.identity_code if client else None,
+            account_reference=context["account_reference"],
+            message=message,
+        )
+
+    message = build_whatsapp_demo_message(
+        client,
+        context["strategy_code"],
+        custom_message,
+        account_reference=context["account_last4"],
+    )
+    return AdminOmnichannelPreviewResponse(
+        channel="whatsapp",
+        strategy_code=context["strategy_code"],
+        client_name=context["client_name"],
+        identity_code=client.identity_code if client else None,
+        account_reference=context["account_reference"],
+        message=message,
+    )
+
+
 @app.post("/admin/omnichannel/whatsapp/demo-send")
 def send_admin_whatsapp_demo(
     payload: AdminWhatsAppDemoSendRequest,
@@ -3768,7 +6372,7 @@ def send_admin_whatsapp_demo(
             accion="WHATSAPP_DEMO_SENT",
             descripcion=(
                 f"WhatsApp demo enviado a {to_whatsapp} | Estrategia: {strategy_code or 'GENERAL'} | "
-                f"Cliente: {(client.codigo_cliente if client else 'N/A')} | SID: {twilio_response.get('sid', '')} | "
+                f"Cliente: {(client.identity_code if client else 'N/A')} | SID: {twilio_response.get('sid', '')} | "
                 f"Mensaje: {message_body}"
             ),
             usuario_id=current_user.id,
@@ -3803,31 +6407,37 @@ def send_admin_email_demo(
     strategy_code = (payload.strategy_code or "").upper() or "FMORA1"
     total_due = 0.0
     minimum_payment = 0.0
-    account_last4 = "****"
-    due_date_str = (datetime.utcnow().date() + timedelta(days=5)).strftime("%d/%m/%Y")
+    account_reference = "sin referencia"
+    today = datetime.utcnow().date()
+    due_date = today + timedelta(days=5)
+    due_date_str = due_date.strftime("%d/%m/%Y")
     client_name = "Cliente"
 
     if client:
         client_name = f"{client.nombres} {client.apellidos}"
         accounts = (
             db.query(Cuenta)
-            .filter(Cuenta.cliente_id == client.id, Cuenta.saldo_mora > 0)
-            .order_by(Cuenta.dias_mora.desc())
+            .filter(Cuenta.cliente_id == client.id)
+            .order_by(Cuenta.dias_mora.desc(), Cuenta.id.asc())
             .all()
         )
         if accounts:
-            total_due = round(sum(float(a.saldo_mora) for a in accounts), 2)
-            minimum_payment = round(sum(calculate_minimum_payment(a) for a in accounts), 2)
-            account_last4 = accounts[0].numero_cuenta[-4:]
-            if not strategy_code or strategy_code == "FMORA1":
-                strategy_code = derive_strategy_code(accounts[0])
+            strategy_context = derive_client_strategy_context(accounts, datetime.utcnow())
+            lead_account = strategy_context["lead_account"] or accounts[0]
+            strategy_code = strategy_context["primary_strategy"] or strategy_code
+            total_due = round(float(lead_account.saldo_mora or 0), 2)
+            minimum_payment = round(float(calculate_minimum_payment(lead_account) or 0), 2)
+            account_reference = lead_account.numero_cuenta or "sin referencia"
+            if lead_account.fecha_vencimiento and lead_account.fecha_vencimiento >= today:
+                due_date = lead_account.fecha_vencimiento
+            due_date_str = due_date.strftime("%d/%m/%Y")
 
     subject, html = build_collection_email_html(
         client_name=client_name,
         strategy_code=strategy_code,
         total_due=total_due,
         minimum_payment=minimum_payment,
-        account_last4=account_last4,
+        account_reference=account_reference,
         due_date_str=due_date_str,
     )
     if payload.custom_subject:
@@ -4342,6 +6952,241 @@ def assign_worklist_clients(
     return {"message": "Clientes asignados a la lista de trabajo correctamente."}
 
 
+@app.get("/admin/worklists/groups/catalog", response_model=list[WorklistGroupRead])
+def get_admin_worklist_group_catalog(
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(require_roles("Admin")),
+):
+    return get_worklist_group_catalog(db)
+
+
+@app.get("/admin/worklists/users/{user_id}/groups", response_model=list[WorklistGroupRead])
+def get_admin_user_worklist_groups(
+    user_id: int,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(require_roles("Admin")),
+):
+    user = db.get(Usuario, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+    return get_worklist_groups_for_user(db, user_id)
+
+
+@app.post("/admin/worklists/groups/assign", status_code=201)
+def assign_worklist_group(
+    payload: WorklistGroupAssignRequest,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles("Admin")),
+):
+    target_user = db.get(Usuario, payload.user_id)
+    if not target_user or target_user.rol != "Collector":
+        raise HTTPException(status_code=404, detail="Collector destino no encontrado.")
+
+    matching_rows = (
+        db.query(AssignmentHistory)
+        .filter(
+            AssignmentHistory.is_current.is_(True),
+            AssignmentHistory.group_id == payload.group_id,
+            AssignmentHistory.strategy_code == payload.strategy_code if payload.strategy_code else text("TRUE"),
+            AssignmentHistory.placement_code == payload.placement_code if payload.placement_code else text("TRUE"),
+        )
+        .all()
+    )
+    if not matching_rows:
+        raise HTTPException(status_code=404, detail="No se encontró la cartera solicitada.")
+
+    client_ids = sorted({row.cliente_id for row in matching_rows})
+    if payload.reassign_existing:
+        db.query(WorklistAssignment).filter(
+            WorklistAssignment.cliente_id.in_(client_ids),
+            WorklistAssignment.activa.is_(True),
+        ).update({WorklistAssignment.activa: False}, synchronize_session=False)
+
+    created = 0
+    for client_id in client_ids:
+        existing = (
+            db.query(WorklistAssignment)
+            .filter(
+                WorklistAssignment.usuario_id == target_user.id,
+                WorklistAssignment.cliente_id == client_id,
+                WorklistAssignment.activa.is_(True),
+            )
+            .first()
+        )
+        if existing:
+            continue
+        client = db.get(Cliente, client_id)
+        if not client:
+            continue
+        assignment = WorklistAssignment(
+            usuario_id=target_user.id,
+            cliente_id=client_id,
+            estrategia_codigo=payload.strategy_code or matching_rows[0].strategy_code,
+            activa=True,
+        )
+        db.add(assignment)
+        db.flush()
+        record_assignment_history(
+            db,
+            client,
+            assignment,
+            strategy_code=payload.strategy_code or matching_rows[0].strategy_code,
+            notes=f"Asignacion administrativa de cartera {payload.group_id} a {target_user.username}.",
+            user=target_user,
+        )
+        current_history = (
+            db.query(AssignmentHistory)
+            .filter(AssignmentHistory.assignment_id == assignment.id, AssignmentHistory.is_current.is_(True))
+            .first()
+        )
+        if current_history:
+            current_history.group_id = payload.group_id
+            current_history.placement_code = payload.placement_code or current_history.placement_code
+            current_history.strategy_code = payload.strategy_code or current_history.strategy_code
+        created += 1
+
+    db.add(
+        History(
+            entidad="asignaciones_cartera",
+            entidad_id=target_user.id,
+            accion="WORKLIST_GROUP_ASSIGNED",
+            descripcion=f"Administrador asignó la cartera {payload.group_id} ({created} clientes) a {target_user.username}.",
+            usuario_id=current_user.id,
+        )
+    )
+    db.commit()
+    return {"message": f"Cartera {payload.group_id} asignada correctamente.", "clients_assigned": created}
+
+
+@app.post("/admin/worklists/groups/unassign")
+def unassign_worklist_group(
+    payload: WorklistGroupUnassignRequest,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles("Admin")),
+):
+    target_user = db.get(Usuario, payload.user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+
+    matching_history = (
+        db.query(AssignmentHistory)
+        .filter(
+            AssignmentHistory.usuario_id == payload.user_id,
+            AssignmentHistory.is_current.is_(True),
+            AssignmentHistory.group_id == payload.group_id,
+            AssignmentHistory.strategy_code == payload.strategy_code if payload.strategy_code else text("TRUE"),
+            AssignmentHistory.placement_code == payload.placement_code if payload.placement_code else text("TRUE"),
+        )
+        .all()
+    )
+    if not matching_history:
+        raise HTTPException(status_code=404, detail="No se encontró esa cartera asignada al usuario.")
+
+    client_ids = sorted({row.cliente_id for row in matching_history})
+    db.query(WorklistAssignment).filter(
+        WorklistAssignment.usuario_id == payload.user_id,
+        WorklistAssignment.cliente_id.in_(client_ids),
+        WorklistAssignment.activa.is_(True),
+    ).update({WorklistAssignment.activa: False}, synchronize_session=False)
+
+    db.add(
+        History(
+            entidad="asignaciones_cartera",
+            entidad_id=target_user.id,
+            accion="WORKLIST_GROUP_UNASSIGNED",
+            descripcion=f"Administrador desasignó la cartera {payload.group_id} de {target_user.username}.",
+            usuario_id=current_user.id,
+        )
+    )
+    db.commit()
+    return {"message": f"Cartera {payload.group_id} desasignada correctamente.", "clients_unassigned": len(client_ids)}
+
+
+@app.get("/admin/supervisor-assignments", response_model=list[SupervisorCollectorAssignmentRead])
+def get_admin_supervisor_assignments(
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(require_roles("Admin")),
+):
+    supervisors = get_supervisors(db)
+    return [
+        SupervisorCollectorAssignmentRead(
+            supervisor=UserRead.model_validate(supervisor),
+            collectors=[UserRead.model_validate(item) for item in get_collectors_for_supervisor(db, supervisor)],
+        )
+        for supervisor in supervisors
+    ]
+
+
+@app.post("/admin/supervisor-assignments", status_code=201)
+def assign_collector_to_supervisor(
+    payload: SupervisorCollectorAssignRequest,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles("Admin")),
+):
+    supervisor = db.get(Usuario, payload.supervisor_id)
+    collector = db.get(Usuario, payload.collector_id)
+    if not supervisor or supervisor.rol != "Supervisor":
+        raise HTTPException(status_code=404, detail="Supervisor no encontrado.")
+    if not collector or collector.rol != "Collector":
+        raise HTTPException(status_code=404, detail="Collector no encontrado.")
+    db.execute(
+        text(
+            """
+            INSERT INTO supervisor_assignments (supervisor_id, collector_id)
+            VALUES (:supervisor_id, :collector_id)
+            ON CONFLICT (supervisor_id, collector_id) DO NOTHING
+            """
+        ),
+        {"supervisor_id": supervisor.id, "collector_id": collector.id},
+    )
+    db.add(
+        History(
+            entidad="usuarios",
+            entidad_id=collector.id,
+            accion="SUPERVISOR_ASSIGNMENT_CREATED",
+            descripcion=f"Administrador asignó a {collector.username} bajo el supervisor {supervisor.username}.",
+            usuario_id=current_user.id,
+        )
+    )
+    db.commit()
+    return {"message": f"{collector.username} fue asignado a {supervisor.username}."}
+
+
+@app.post("/admin/supervisor-assignments/remove")
+def unassign_collector_from_supervisor(
+    payload: SupervisorCollectorAssignRequest,
+    db: Session = Depends(get_db),
+    current_user: Usuario = Depends(require_roles("Admin")),
+):
+    supervisor = db.get(Usuario, payload.supervisor_id)
+    collector = db.get(Usuario, payload.collector_id)
+    if not supervisor or supervisor.rol != "Supervisor":
+        raise HTTPException(status_code=404, detail="Supervisor no encontrado.")
+    if not collector or collector.rol != "Collector":
+        raise HTTPException(status_code=404, detail="Collector no encontrado.")
+    db.execute(
+        text(
+            """
+            DELETE FROM supervisor_assignments
+            WHERE supervisor_id = :supervisor_id
+              AND collector_id = :collector_id
+            """
+        ),
+        {"supervisor_id": supervisor.id, "collector_id": collector.id},
+    )
+    db.add(
+        History(
+            entidad="usuarios",
+            entidad_id=collector.id,
+            accion="SUPERVISOR_ASSIGNMENT_REMOVED",
+            descripcion=f"Administrador retiró a {collector.username} del supervisor {supervisor.username}.",
+            usuario_id=current_user.id,
+        )
+    )
+    db.commit()
+    return {"message": f"{collector.username} fue desasignado de {supervisor.username}."}
+
+
 @app.post("/admin/documents/analyze", response_model=AdminDocumentProposalResponse)
 async def analyze_admin_document(
     file: UploadFile = File(...),
@@ -4418,12 +7263,12 @@ def apply_admin_client_import(
     assignment_updates = 0
 
     for row in proposal.get("clean_rows", []):
-        client = db.query(Cliente).filter(Cliente.codigo_cliente == row["codigo_cliente"]).first()
+        client = db.query(Cliente).filter(Cliente.identity_code == row["identity_code"]).first()
         if client:
             updated_clients += 1
         else:
             client = Cliente(
-                codigo_cliente=row["codigo_cliente"],
+                identity_code=row["identity_code"],
                 nombres=row["nombres"],
                 apellidos=row["apellidos"],
                 dui=row["dui"],
@@ -4634,6 +7479,23 @@ def run_admin_daily_rollover(
             current_user,
             fmora1_clients=payload.fmora1_clients,
             preventivo_clients=payload.preventivo_clients,
+            recovery_clients=payload.recovery_clients,
+        )
+    )
+
+
+@app.post("/admin/simulations/daily-rollover/preview", response_model=AdminDailySimulationPreviewResponse)
+def preview_admin_daily_rollover(
+    payload: AdminDailySimulationRequest,
+    db: Session = Depends(get_db),
+    _: Usuario = Depends(require_roles("Admin")),
+):
+    return AdminDailySimulationPreviewResponse(
+        **build_daily_operational_simulation_preview(
+            db,
+            fmora1_clients=payload.fmora1_clients,
+            preventivo_clients=payload.preventivo_clients,
+            recovery_clients=payload.recovery_clients,
         )
     )
 
@@ -4830,7 +7692,9 @@ def predict_promise_break_probability(
 
 
 def suggest_best_channel(strategy: str, break_probability: float, ai_probability: float, has_phone: bool, has_email: bool) -> str:
-    if strategy in {"AL_DIA", "PREVENTIVO"}:
+    if strategy == "AL_DIA":
+        return "Monitoreo sin contacto"
+    if strategy == "PREVENTIVO":
         return "Chatbot WhatsApp" if has_phone else "Correo automatizado"
     if strategy in {"FMORA1", "MMORA2"}:
         if ai_probability >= 0.6:
@@ -4841,7 +7705,7 @@ def suggest_best_channel(strategy: str, break_probability: float, ai_probability
     if strategy in {"BMORA5", "CMORA6", "DMORA7"}:
         return "Llamada telefonica intensiva" if has_phone else "Escalamiento supervisor"
     if strategy == "VAGENCIASEXTERNASINTERNO":
-        return "Llamada + barrido digital" if has_phone else "Escalamiento interno/externo"
+        return "Callbot + llamada humana + WhatsApp" if has_phone else "Callbot + escalamiento interno/externo"
     if strategy == "HMR":
         return "Llamada consultiva" if has_phone else "Correo consultivo"
     return "Llamada telefonica" if break_probability >= 0.55 and has_phone else ("Correo" if has_email else "Gestion manual")
@@ -4856,7 +7720,12 @@ def build_copilot_guidance(
     pending_promises: list[Promesa],
     total_outstanding: float,
 ) -> tuple[str, str]:
-    if strategy in {"AL_DIA", "PREVENTIVO"}:
+    if strategy == "AL_DIA":
+        next_action = "Mantener monitoreo, no contactar y esperar entrada a preventivo si aplica."
+        talk_track = (
+            f"{client.nombres} se mantiene al día. No se recomienda contacto en esta etapa; solo monitoreo preventivo y seguimiento silencioso."
+        )
+    elif strategy == "PREVENTIVO":
         next_action = "Enviar recordatorio preventivo y ofrecer link de pago inmediato."
         talk_track = (
             f"Hola {client.nombres}, te contactamos para ayudarte a mantener tu cuenta al dia. "
@@ -4879,6 +7748,12 @@ def build_copilot_guidance(
         talk_track = (
             f"Hola {client.nombres}, tu saldo vencido requiere atencion inmediata. "
             f"Necesitamos acordar hoy una accion concreta para detener el deterioro de la cuenta."
+        )
+    elif strategy == "VAGENCIASEXTERNASINTERNO":
+        next_action = "Abrir con callbot, escalar a llamada humana y reforzar por WhatsApp si hay contacto."
+        talk_track = (
+            f"Hola {client.nombres}, tu caso se encuentra en Recovery. "
+            f"Vamos a validar respuesta inmediata, ubicar capacidad real de pago y direccionar el placement correcto."
         )
     elif strategy == "HMR":
         next_action = "Explorar herramienta de mitigacion y validar capacidad de pago."
@@ -4970,15 +7845,22 @@ def derive_assignment_distribution(
     strategy_code: Optional[str],
     user: Optional[Usuario],
     previous_history: Optional[AssignmentHistory] = None,
+    seed_value: Optional[int] = None,
 ) -> tuple[Optional[str], Optional[str], Optional[float], Optional[float], Optional[str]]:
     normalized = (strategy_code or "").upper()
     if normalized != "VAGENCIASEXTERNASINTERNO":
         return None, None, None, None, None
 
-    placement_code = next_placement_code(previous_history)
-    channel_scope = "INTERNO" if user and user.rol == "Collector" else "EXTERNO"
-    assigned_share_pct = 20.0 if channel_scope == "INTERNO" else 80.0
-    group_id = choose_next_group_id(placement_code, channel_scope, previous_history)
+    if previous_history:
+        placement_code = next_placement_code(previous_history)
+        channel_scope = previous_history.channel_scope or "EXTERNO"
+        group_id = choose_next_group_id(placement_code, channel_scope, previous_history)
+    else:
+        seed_index = max(0, int(seed_value or 0))
+        placement_code = PLACEMENT_SEQUENCE[seed_index % len(PLACEMENT_SEQUENCE)]
+        channel_scope = "EXTERNO"
+        group_id = format_external_group_id(placement_code, EXTERNAL_AGENCY_SLOTS[seed_index % len(EXTERNAL_AGENCY_SLOTS)])
+    assigned_share_pct = 100.0 if channel_scope == "EXTERNO" else 20.0
     return placement_code, channel_scope, assigned_share_pct, None, group_id
 
 
@@ -5024,6 +7906,7 @@ def record_assignment_history(
         strategy_code,
         user,
         previous_history,
+        assignment.id or client.id,
     )
     if not group_id:
         group_id = user.username.upper() if user else None

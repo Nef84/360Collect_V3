@@ -9,8 +9,8 @@ services:
     type: web
     runtime: docker
     plan: free
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile.render
+    dockerContext: .
     autoDeployTrigger: commit
     healthCheckPath: /health
     envVars:
@@ -29,12 +29,11 @@ services:
       - key: JWT_REFRESH_EXPIRE_DAYS
         value: "7"
       - key: CORS_ORIGINS
-        value: https://app-360collect.onrender.com,http://localhost:5173,http://127.0.0.1:5173
+        value: https://app-360collect.onrender.com,https://api-360collect.onrender.com,http://localhost:5173,http://127.0.0.1:5173
 
   - name: app-360collect
     type: web
     runtime: static
-    plan: free
     rootDir: frontend
     buildCommand: npm install && VITE_API_URL=https://$BACKEND_HOST npm run build
     staticPublishPath: dist

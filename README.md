@@ -95,6 +95,42 @@ collectplus-backend  | INFO:     Application startup complete.
 
 ---
 
+## Publicar en Render
+
+El proyecto ya incluye:
+
+- [render.yaml](/C:/Users/abc/OneDrive/Documentos/360CollectPlus_V3/render.yaml)
+- [backend/Dockerfile.render](/C:/Users/abc/OneDrive/Documentos/360CollectPlus_V3/backend/Dockerfile.render)
+
+### Qué crea Render
+
+- Base PostgreSQL administrada: `db-360collect`
+- API pública: `api-360collect`
+- Frontend público: `app-360collect`
+
+### Pasos
+
+1. Sube estos cambios a tu repo GitHub.
+2. Entra a [Render](https://render.com/).
+3. Haz clic en `New +` → `Blueprint`.
+4. Conecta el repo `Nef84/360Collect_V3`.
+5. Selecciona el archivo `render.yaml`.
+6. Confirma el despliegue.
+
+### Importante
+
+- El backend ahora puede sembrar una base vacía automáticamente usando `database/init.sql`.
+- El frontend en Render se construye con la URL pública del backend mediante `VITE_API_URL=https://$BACKEND_HOST`.
+- El primer despliegue puede tardar varios minutos mientras Render crea la base, construye la API y compila el frontend.
+
+### URLs esperadas
+
+- Frontend: `https://app-360collect.onrender.com`
+- Backend: `https://api-360collect.onrender.com`
+- Health: `https://api-360collect.onrender.com/health`
+
+---
+
 ## Usuarios de prueba
 
 Todos usan la contraseña: `Password123!`
@@ -295,6 +331,8 @@ En la carpeta `docs/` encontrarás:
 - `03_Manual_Supervisor.pdf` — Manual del supervisor
 - `04_Manual_Administrador.pdf` — Manual completo del administrador
 - `05_Resumen_Ejecutivo_360Collect_V3.md` — Documento ejecutivo para comité y presentación comercial
+- `06_Presentacion_Ejecutiva_360Collect_V3.md` — Presentación ejecutiva base de 10 diapositivas
+- `07_Guion_Video_Ejecutivo_360Collect_V3.md` — Guion ejecutivo para video comercial/presentación
 
 ---
 
