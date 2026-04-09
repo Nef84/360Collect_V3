@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 # ── Local modules ─────────────────────────────────────────────────────────────
 from config import settings, COLLECTOR_DAILY_WORKLIST_LIMIT, PLACEMENT_SEQUENCE, PLACEMENT_EXTERNAL_SUFFIX, EXTERNAL_AGENCY_SLOTS, INTERNAL_WORKLIST_SLOTS
-from database import Base, engine, SessionLocal, get_db, get_readonly_connection
+from database import Base, engine, SessionLocal, get_db, get_readonly_connection, wait_for_database
 from models import (
     Usuario, Cliente, Cuenta, Pago, PrediccionIA, Promesa,
     History, Strategy, WorklistAssignment, AssignmentHistory, WhatsAppBotSession,
@@ -132,7 +132,7 @@ def ensure_runtime_schema() -> None:
     END $$;
     ALTER TABLE clientes ADD COLUMN IF NOT EXISTS identity_code VARCHAR(30);
     UPDATE clientes
-    SET identity_code = LPAD(REGEXP_REPLACE(COALESCE(identity_code, ''), '\D', '', 'g'), 11, '0')
+    SET identity_code = LPAD(REGEXP_REPLACE(COALESCE(identity_code, ''), '\\D', '', 'g'), 11, '0')
     WHERE identity_code IS NULL
        OR BTRIM(identity_code) = ''
        OR identity_code !~ '^\d{11}$';
@@ -4173,6 +4173,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup() -> None:
+    wait_for_database()
     seed_database_from_init_sql_if_empty()
     ensure_runtime_schema()
 
