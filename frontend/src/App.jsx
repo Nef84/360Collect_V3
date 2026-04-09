@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import brandLogo from "./assets/collectplus-logo.png";
+import brandLogo from "./assets/collectplus-logo-final-cropped.png";
 
 const API_URL = import.meta.env.VITE_API_URL || "/api";
 
@@ -21,7 +21,7 @@ const strategyLabels = {
   BMORA5: "B Mora 5",
   CMORA6: "C Mora 6",
   DMORA7: "D Mora 7",
-  VAGENCIASEXTERNASINTERNO: "Agencias / Interno",
+  VAGENCIASEXTERNASINTERNO: "Recovery",
   HMR: "Herramientas HMR"
 };
 
@@ -35,7 +35,7 @@ const strategyDescriptions = {
   BMORA5: "Cartera avanzada que requiere gestion intensiva y rutas alternas.",
   CMORA6: "Tramo severo con foco en recuperacion agresiva y mitigacion.",
   DMORA7: "Mas de 190 dias en vigente. Priorizacion de maxima severidad.",
-  VAGENCIASEXTERNASINTERNO: "Cartera para canal interno/externo por antiguedad o estatus.",
+  VAGENCIASEXTERNASINTERNO: "Segmento Recovery con placements y listas internas/externas por antiguedad o estatus.",
   HMR: "Clientes con opciones de mitigacion y herramientas de solucion."
 };
 
@@ -92,12 +92,14 @@ function getSearchModeLabel(mode) {
     nombre: "Nombre",
     cuenta: "Numero de cuenta",
     plastico: "Numero de plastico",
+    telefono: "Numero de telefono",
   };
   return labels[mode] || "Busqueda general";
 }
 
 function getSubgroupFamilyLabel(subgroupKey) {
   if (!subgroupKey) return "General";
+  if (subgroupKey.startsWith("PLACEMENT_")) return subgroupKey.replace("PLACEMENT_", "").replace(/_/g, " ");
   if (subgroupKey.endsWith("HIPOTECAS")) return "Hipotecas";
   if (subgroupKey.endsWith("PIL")) return "Prestamos PIL";
   if (subgroupKey.endsWith("CARDS")) return "Tarjetas";
@@ -129,23 +131,97 @@ function formatChannelErrorMessage(raw) {
   return String(raw);
 }
 
+function buildEmptyDemographicProfile(baseClient = null) {
+  return {
+    cliente_id: baseClient?.id || null,
+    phones: baseClient?.telefono ? [{ id: null, phone_type: "CEL", value: baseClient.telefono, is_primary: true }] : [{ id: null, phone_type: "CEL", value: "", is_primary: true }],
+    emails: baseClient?.email ? [{ id: null, value: baseClient.email, is_primary: true }] : [],
+    addresses: baseClient?.direccion ? [{ id: null, address_type: "CASA", value: baseClient.direccion, is_primary: true }] : [],
+  };
+}
+
+function formatDisplayIdentityCode(client) {
+  if (!client) return "00000000000";
+  const explicitValue = String(client.identity_code || client.numero_unico || "").trim();
+  if (explicitValue) return explicitValue;
+  const codeDigits = String(client.identity_code || "").replace(/\D/g, "");
+  if (codeDigits) return codeDigits.slice(-11).padStart(11, "0");
+  if (client.id != null) return String(client.id).padStart(11, "0");
+  return "00000000000";
+}
+
+function formatOmnichannelClientOption(client) {
+  if (!client) return "Cliente";
+  const numeroUnico = formatDisplayIdentityCode(client);
+  const nombre = [client.nombres, client.apellidos].filter(Boolean).join(" ").trim();
+  return `${numeroUnico} · ${nombre || "Cliente sin nombre"}`;
+}
+
 function BrandBadge({ compact = false, dark = false }) {
   return (
     <div className={`flex items-center gap-2 ${compact ? "" : "mb-6"}`}>
-      <div className={`${compact ? "h-10 w-[112px]" : "h-16 w-[172px]"} overflow-hidden`}>
-        <img
-          src={brandLogo}
-          alt="360CollectPlus"
-          className="h-full w-full scale-[1.28] object-cover object-center"
-          style={{ filter: dark ? "none" : "none" }}
-        />
-      </div>
+      <BrandLogo size={compact ? "compact" : "default"} align="center" />
       {!compact && (
         <div className="ml-1">
           <p className="text-xs uppercase tracking-[0.32em] text-mint font-semibold">Plataforma de cobranza</p>
           <p className="text-sm text-white/80 leading-tight">IA · Omnicanalidad · Control total</p>
         </div>
       )}
+    </div>
+  );
+}
+
+function BrandLogo({ size = "header", align = "left", className = "" }) {
+  const sizeMap = {
+    compact: "h-[5.2rem] w-[250px]",
+    default: "h-[8.8rem] w-[470px]",
+    hero: "h-[10rem] w-[540px]",
+    mobile: "h-[8.4rem] w-[450px]",
+    header: "h-[7rem] w-[400px]",
+    headerLg: "h-[8.4rem] w-[450px]",
+  };
+  const objectPositionMap = {
+    compact: "54% center",
+    default: "55% center",
+    hero: "57% center",
+    mobile: "56% center",
+    header: "55% center",
+    headerLg: "56% center",
+  };
+  const scaleMap = {
+    compact: "scale(1.12)",
+    default: "scale(1.13)",
+    hero: "scale(1.16)",
+    mobile: "scale(1.15)",
+    header: "scale(1.12)",
+    headerLg: "scale(1.14)",
+  };
+  const resolvedSize = sizeMap[size] ? size : "header";
+  const objectPosition = align === "center" ? "center center" : (objectPositionMap[resolvedSize] || "55% center");
+
+  return (
+    <div className={`relative ${sizeMap[resolvedSize]} ${className}`}>
+      <img
+        src={brandLogo}
+        alt="360CollectPlus"
+        className="relative z-10 h-full w-full object-contain"
+        style={{
+          filter: "brightness(1.12) contrast(1.08) saturate(1.1) drop-shadow(0 16px 30px rgba(88, 232, 219, 0.22))",
+          opacity: 1,
+          transform: scaleMap[resolvedSize] || "scale(1.12)",
+          transformOrigin: align === "center" ? "center center" : "center center",
+          objectPosition,
+        }}
+      />
+      <div
+        className="pointer-events-none absolute inset-0 z-20"
+        style={{
+          background:
+            "radial-gradient(circle at 38% 42%, rgba(255,255,255,0.4) 0%, rgba(180,245,255,0.2) 9%, rgba(180,245,255,0.08) 17%, transparent 28%)",
+          mixBlendMode: "screen",
+          opacity: 0.9,
+        }}
+      />
     </div>
   );
 }
@@ -239,9 +315,7 @@ function LoginForm({ onLogin, loading, error }) {
       {/* Left panel */}
       <div className="login-gradient hidden w-[52%] flex-col justify-between p-12 lg:flex relative">
         <div className="relative z-10">
-          <div className="h-20 w-[180px] overflow-hidden">
-            <img src={brandLogo} alt="360CollectPlus" className="h-full w-full scale-[1.3] object-cover object-center" style={{ filter: "drop-shadow(0 4px 24px rgba(0,180,166,0.4))" }} />
-          </div>
+          <BrandLogo size="hero" />
           <div className="mt-8">
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-teal">Plataforma de cobranza omnicanal</p>
             <h1 className="mt-3 text-[2.6rem] font-bold leading-[1.15] text-white">
@@ -274,9 +348,7 @@ function LoginForm({ onLogin, loading, error }) {
       <div className="flex flex-1 flex-col items-center justify-center bg-white px-8 py-12">
         {/* Mobile logo */}
         <div className="mb-8 lg:hidden">
-          <div className="mx-auto h-16 w-[150px] overflow-hidden">
-            <img src={brandLogo} alt="360CollectPlus" className="h-full w-full scale-[1.3] object-cover object-center" />
-          </div>
+          <BrandLogo size="mobile" align="center" className="mx-auto" />
         </div>
 
         <div className="w-full max-w-sm fade-in">
@@ -347,13 +419,14 @@ function LoginForm({ onLogin, loading, error }) {
   );
 }
 
-function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitManagement, onUpdateDemographics, saving, error, success }) {
+function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitManagement, onLoadDemographics, onUpdateDemographics, onLookupClient, saving, error, success, exitLabel = "Cerrar sesión" }) {
   const [selectedClientId, setSelectedClientId] = useState(null);
   const [selectedStrategy, setSelectedStrategy] = useState(null);
   const [selectedSubgroup, setSelectedSubgroup] = useState(null);
   const [activeTab, setActiveTab] = useState("deudor");
   const [queueMode, setQueueMode] = useState(false);
   const [queueIndex, setQueueIndex] = useState(0);
+  const [queueSearchInput, setQueueSearchInput] = useState("");
   const [queueSearch, setQueueSearch] = useState("");
   const [queueSearchMode, setQueueSearchMode] = useState("all");
   const [managementSearch, setManagementSearch] = useState("");
@@ -378,9 +451,28 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
     actionForm: false,
     history: false,
   });
+  const [demographicModalOpen, setDemographicModalOpen] = useState(false);
+  const [demographicModalLoading, setDemographicModalLoading] = useState(false);
+  const [demographicModalData, setDemographicModalData] = useState(buildEmptyDemographicProfile());
+  const [lookupClient, setLookupClient] = useState(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
   const managementSearchRef = useRef(null);
+  const scrollToTop = () => window.scrollTo({ top: 0, behavior: "smooth" });
   const toggleSection = (sectionKey) =>
     setCollapsedSections((current) => ({ ...current, [sectionKey]: !current[sectionKey] }));
+  const openDemographicEditor = async () => {
+    if (!activeClient) return;
+    setDemographicModalLoading(true);
+    setDemographicModalOpen(true);
+    try {
+      const profile = await onLoadDemographics(activeClient);
+      setDemographicModalData(profile || buildEmptyDemographicProfile(activeClient));
+    } catch {
+      setDemographicModalData(buildEmptyDemographicProfile(activeClient));
+    } finally {
+      setDemographicModalLoading(false);
+    }
+  };
 
   const filteredClients = useMemo(() => {
     if (!portfolio) return [];
@@ -389,7 +481,14 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
       ? portfolio.clients.filter((item) => item.hmr_elegible)
       : portfolio.clients.filter((item) => item.estrategia_principal === selectedStrategy);
     if (!selectedSubgroup) return strategyClients;
-    return strategyClients.filter((item) => (item.estrategia_subgrupo || `${selectedStrategy}CARDS`) === selectedSubgroup);
+    return strategyClients.filter((item) => {
+      if (selectedStrategy === "VAGENCIASEXTERNASINTERNO") {
+        const placementCode = item.placement_code || "SIN_PLACEMENT";
+        const listCode = item.group_id || item.sublista_trabajo || "GENERAL";
+        return `PLACEMENT_${placementCode}_${listCode}` === selectedSubgroup;
+      }
+      return (item.estrategia_subgrupo || `${selectedStrategy}CARDS`) === selectedSubgroup;
+    });
   }, [portfolio, selectedStrategy, selectedSubgroup]);
 
   const selectedClient = useMemo(
@@ -408,7 +507,7 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
         if ((leftCallback || 0) !== (rightCallback || 0)) return (leftCallback || 0) - (rightCallback || 0);
         if (left.worked_today !== right.worked_today) return left.worked_today ? 1 : -1;
         if (left.total_outstanding !== right.total_outstanding) return right.total_outstanding - left.total_outstanding;
-        return left.codigo_cliente.localeCompare(right.codigo_cliente);
+        return (left.identity_code || "").localeCompare(right.identity_code || "");
       }),
     [filteredClients]
   );
@@ -446,6 +545,7 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
         nombre: [client.nombres, client.apellidos, `${client.nombres || ""} ${client.apellidos || ""}`.trim()],
         cuenta: (client.accounts || []).map((account) => account.numero_cuenta),
         plastico: (client.accounts || []).flatMap((account) => [account.numero_plastico, account.numero_plastico?.replace(/-/g, "")]),
+        telefono: [client.telefono],
       })[queueSearchMode]
         .filter(Boolean)
         .some((value) => matchesField(value))
@@ -458,9 +558,44 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
     nombre: "Busca por nombres o apellidos del cliente.",
     cuenta: "Busca por numero de cuenta del producto.",
     plastico: "Busca por numero de plastico con o sin guiones.",
+    telefono: "Busca por numero de telefono con o sin espacios.",
   };
+  const applyQueueSearch = async () => {
+    setQueueSearch(queueSearchInput);
+    setQueueIndex(0);
+    if (!queueSearchInput.trim()) {
+      setLookupClient(null);
+      return;
+    }
+    if (!onLookupClient) return;
+    setLookupLoading(true);
+    try {
+      const foundClient = await onLookupClient(queueSearchInput.trim(), queueSearchMode);
+      setLookupClient(foundClient || null);
+    } catch {
+      setLookupClient(null);
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+  const scopedCollectorLabel = portfolio?.collector?.nombre || portfolio?.collector?.username || "Collector";
+  const hasAppliedQueueSearch = Boolean(queueSearch.trim());
   const strategyStateCode = selectedStrategy ? strategyStateCodes[selectedStrategy] || selectedStrategy : null;
-  const activeClient = queueMode ? searchedQueueClients[queueIndex] ?? selectedClient ?? queueClients[0] ?? null : selectedClient;
+  const lookupMatchesCurrentFilters = useMemo(() => {
+    if (!lookupClient) return false;
+    if (selectedStrategy && lookupClient.estrategia_principal !== selectedStrategy) return false;
+    if (!selectedSubgroup) return true;
+    if (selectedStrategy === "VAGENCIASEXTERNASINTERNO") {
+      const placementCode = lookupClient.placement_code || "SIN_PLACEMENT";
+      const listCode = lookupClient.group_id || lookupClient.sublista_trabajo || "GENERAL";
+      return `PLACEMENT_${placementCode}_${listCode}` === selectedSubgroup;
+    }
+    return (lookupClient.estrategia_subgrupo || `${selectedStrategy}CARDS`) === selectedSubgroup;
+  }, [lookupClient, selectedStrategy, selectedSubgroup]);
+  const visibleQueueClients = searchedQueueClients.length > 0 ? searchedQueueClients : (lookupClient ? [lookupClient] : []);
+  const activeClient = queueMode
+    ? visibleQueueClients[queueIndex] ?? visibleQueueClients[0] ?? (hasAppliedQueueSearch ? null : selectedClient ?? queueClients[0] ?? null)
+    : selectedClient;
   const historyPageSize = 15;
 
   const selectedAccount = useMemo(
@@ -506,16 +641,18 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
   }, [activeClient?.id]);
 
   useEffect(() => {
+    setQueueSearchInput("");
     setQueueSearch("");
+    setLookupClient(null);
     setQueueIndex(0);
     setSelectedClientId(null);
   }, [selectedStrategy, selectedSubgroup]);
 
   useEffect(() => {
     if (!queueMode) return;
-    if (queueIndex < searchedQueueClients.length) return;
+    if (queueIndex < visibleQueueClients.length) return;
     setQueueIndex(0);
-  }, [queueMode, queueIndex, searchedQueueClients.length]);
+  }, [queueMode, queueIndex, visibleQueueClients.length]);
 
   useEffect(() => {
     if (managementPage <= totalHistoryPages) return;
@@ -534,6 +671,179 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [queueMode]);
+
+  const updateModalCollectionItem = (collectionKey, index, field, value) => {
+    setDemographicModalData((current) => ({
+      ...current,
+      [collectionKey]: current[collectionKey].map((item, itemIndex) =>
+        itemIndex === index ? { ...item, [field]: value } : item
+      ),
+    }));
+  };
+
+  const setPrimaryModalItem = (collectionKey, index) => {
+    setDemographicModalData((current) => ({
+      ...current,
+      [collectionKey]: current[collectionKey].map((item, itemIndex) => ({
+        ...item,
+        is_primary: itemIndex === index,
+      })),
+    }));
+  };
+
+  const addModalItem = (collectionKey) => {
+    setDemographicModalData((current) => ({
+      ...current,
+      [collectionKey]: [
+        ...current[collectionKey],
+        collectionKey === "phones"
+          ? { id: null, phone_type: "CEL", value: "", is_primary: current.phones.length === 0 }
+          : collectionKey === "emails"
+            ? { id: null, value: "", is_primary: current.emails.length === 0 }
+            : { id: null, address_type: "CASA", value: "", is_primary: current.addresses.length === 0 },
+      ],
+    }));
+  };
+
+  const removeModalItem = (collectionKey, index) => {
+    setDemographicModalData((current) => {
+      const nextItems = current[collectionKey].filter((_, itemIndex) => itemIndex !== index);
+      const normalizedItems = nextItems.map((item) => ({ ...item }));
+      if (normalizedItems.length > 0 && !normalizedItems.some((item) => item.is_primary)) {
+        normalizedItems[0] = { ...normalizedItems[0], is_primary: true };
+      }
+      return {
+        ...current,
+        [collectionKey]: normalizedItems,
+      };
+    });
+  };
+
+  const demographicModal = demographicModalOpen ? (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 px-4 py-6 backdrop-blur-sm">
+      <div className="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-[28px] bg-white shadow-2xl">
+        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-5">
+          <div>
+            <p className="text-xs uppercase tracking-[0.22em] text-ocean">Datos demograficos</p>
+            <h3 className="mt-1 text-2xl font-bold text-ink">
+              {activeClient ? `${activeClient.nombres} ${activeClient.apellidos}` : "Cliente"}
+            </h3>
+            <p className="mt-1 text-sm text-slate-500">Agrega, modifica o elimina telefonos, correos y direcciones. El cambio quedara en el historico del cliente.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDemographicModalOpen(false)}
+            className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-ink"
+          >
+            Cerrar
+          </button>
+        </div>
+
+        <div className="grid gap-6 px-6 py-6 xl:grid-cols-3">
+          <section className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+            <div className="flex items-center justify-between">
+              <h4 className="text-lg font-semibold text-ink">Telefonos</h4>
+              <button type="button" onClick={() => addModalItem("phones")} className="rounded-full bg-ocean px-3 py-1.5 text-xs font-semibold text-white">Agregar</button>
+            </div>
+            <div className="mt-4 space-y-4">
+              {(demographicModalData.phones || []).map((phone, index) => (
+                <div key={`phone-${index}`} className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="grid gap-3">
+                    <select value={phone.phone_type || "CEL"} onChange={(event) => updateModalCollectionItem("phones", index, "phone_type", event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                      <option value="CASA">Tel Casa</option>
+                      <option value="TRABAJO">Tel Trabajo</option>
+                      <option value="CEL">Cel</option>
+                    </select>
+                    <input value={phone.value || ""} onChange={(event) => updateModalCollectionItem("phones", index, "value", event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3" placeholder="Numero de telefono" />
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 text-sm text-slate-700">
+                        <input type="radio" name="primary-phone" checked={Boolean(phone.is_primary)} onChange={() => setPrimaryModalItem("phones", index)} />
+                        Principal
+                      </label>
+                      <button type="button" onClick={() => removeModalItem("phones", index)} className="text-sm font-semibold text-red-600">Eliminar</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {(!demographicModalData.phones || demographicModalData.phones.length === 0) ? <p className="text-sm text-slate-500">No hay telefonos registrados.</p> : null}
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+            <div className="flex items-center justify-between">
+              <h4 className="text-lg font-semibold text-ink">Correos</h4>
+              <button type="button" onClick={() => addModalItem("emails")} className="rounded-full bg-ocean px-3 py-1.5 text-xs font-semibold text-white">Agregar</button>
+            </div>
+            <div className="mt-4 space-y-4">
+              {(demographicModalData.emails || []).map((email, index) => (
+                <div key={`email-${index}`} className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="grid gap-3">
+                    <input value={email.value || ""} onChange={(event) => updateModalCollectionItem("emails", index, "value", event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3" placeholder="correo@cliente.com" />
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 text-sm text-slate-700">
+                        <input type="radio" name="primary-email" checked={Boolean(email.is_primary)} onChange={() => setPrimaryModalItem("emails", index)} />
+                        Principal
+                      </label>
+                      <button type="button" onClick={() => removeModalItem("emails", index)} className="text-sm font-semibold text-red-600">Eliminar</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {(!demographicModalData.emails || demographicModalData.emails.length === 0) ? <p className="text-sm text-slate-500">No hay correos registrados.</p> : null}
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+            <div className="flex items-center justify-between">
+              <h4 className="text-lg font-semibold text-ink">Direcciones</h4>
+              <button type="button" onClick={() => addModalItem("addresses")} className="rounded-full bg-ocean px-3 py-1.5 text-xs font-semibold text-white">Agregar</button>
+            </div>
+            <div className="mt-4 space-y-4">
+              {(demographicModalData.addresses || []).map((address, index) => (
+                <div key={`address-${index}`} className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="grid gap-3">
+                    <select value={address.address_type || "CASA"} onChange={(event) => updateModalCollectionItem("addresses", index, "address_type", event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                      <option value="CASA">Casa</option>
+                      <option value="TRABAJO">Trabajo</option>
+                      <option value="OTRA">Otra</option>
+                    </select>
+                    <textarea value={address.value || ""} onChange={(event) => updateModalCollectionItem("addresses", index, "value", event.target.value)} rows="4" className="rounded-2xl border border-slate-200 bg-white px-4 py-3" placeholder="Direccion fisica completa" />
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 text-sm text-slate-700">
+                        <input type="radio" name="primary-address" checked={Boolean(address.is_primary)} onChange={() => setPrimaryModalItem("addresses", index)} />
+                        Principal
+                      </label>
+                      <button type="button" onClick={() => removeModalItem("addresses", index)} className="text-sm font-semibold text-red-600">Eliminar</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {(!demographicModalData.addresses || demographicModalData.addresses.length === 0) ? <p className="text-sm text-slate-500">No hay direcciones registradas.</p> : null}
+            </div>
+          </section>
+        </div>
+
+        <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-slate-200 bg-white px-6 py-4">
+          <p className="text-sm text-slate-500">
+            {demographicModalLoading ? "Cargando datos..." : "Los cambios actualizaran la ficha del cliente y quedaran registrados en el historico."}
+          </p>
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={() => setDemographicModalOpen(false)} className="rounded-2xl border border-slate-200 px-4 py-3 font-semibold text-ink">
+              Cancelar
+            </button>
+            <button
+              type="button"
+              disabled={saving || demographicModalLoading || !activeClient}
+              onClick={() => onUpdateDemographics(activeClient, demographicModalData, onRefresh, () => setDemographicModalOpen(false))}
+              className="rounded-2xl bg-ocean px-5 py-3 font-semibold text-white disabled:opacity-50"
+            >
+              {saving ? "Guardando..." : "Guardar cambios"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
 
   const worklistSections = useMemo(() => {
     if (!selectedStrategy) return [];
@@ -570,6 +880,26 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
     const strategyClients = selectedStrategy === "HMR"
       ? portfolio.clients.filter((item) => item.hmr_elegible)
       : portfolio.clients.filter((item) => item.estrategia_principal === selectedStrategy);
+    if (selectedStrategy === "VAGENCIASEXTERNASINTERNO") {
+      const grouped = strategyClients.reduce((accumulator, client) => {
+        const placementCode = client.placement_code || "SIN_PLACEMENT";
+        const listCode = client.group_id || client.sublista_trabajo || "GENERAL";
+        const key = `PLACEMENT_${placementCode}_${listCode}`;
+        if (!accumulator[key]) {
+          accumulator[key] = {
+            key,
+            title: `${placementCode} · ${listCode}`,
+            description: client.sublista_descripcion || `Placement ${placementCode} con lista ${listCode}.`,
+            clients: [],
+            placementCode,
+            listCode,
+          };
+        }
+        accumulator[key].clients.push(client);
+        return accumulator;
+      }, {});
+      return Object.values(grouped).sort((left, right) => right.clients.length - left.clients.length);
+    }
     const grouped = strategyClients.reduce((accumulator, client) => {
       const key = client.estrategia_subgrupo || `${selectedStrategy}CARDS`;
       if (!accumulator[key]) {
@@ -589,12 +919,41 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
   }, [portfolio, selectedStrategy]);
   const subgroupCards = strategySublistSections.map((section, index) => ({
     ...section,
-    stateCode: strategyStateCode || `G${String(index + 1).padStart(2, "0")}`,
+    stateCode:
+      selectedStrategy === "VAGENCIASEXTERNASINTERNO"
+        ? section.placementCode || section.listCode || `R${String(index + 1).padStart(2, "0")}`
+        : strategyStateCode || `G${String(index + 1).padStart(2, "0")}`,
     familyLabel: getSubgroupFamilyLabel(section.key),
     pendingCount: section.clients.filter((client) => !client.worked_today && !client.next_callback_at && !client.requires_supervisor_review).length,
     callbackCount: section.clients.filter((client) => Boolean(client.next_callback_at)).length,
   }));
   const activeSubgroupCard = subgroupCards.find((section) => section.key === selectedSubgroup) || null;
+  const recoveryPlacementGroups = useMemo(() => {
+    if (selectedStrategy !== "VAGENCIASEXTERNASINTERNO") return [];
+    const grouped = subgroupCards.reduce((accumulator, section) => {
+      const placementKey = section.placementCode || "SIN_PLACEMENT";
+      if (!accumulator[placementKey]) {
+        accumulator[placementKey] = {
+          placementCode: placementKey,
+          totalClients: 0,
+          pendingCount: 0,
+          callbackCount: 0,
+          lists: [],
+        };
+      }
+      accumulator[placementKey].totalClients += section.clients.length;
+      accumulator[placementKey].pendingCount += section.pendingCount;
+      accumulator[placementKey].callbackCount += section.callbackCount;
+      accumulator[placementKey].lists.push(section);
+      return accumulator;
+    }, {});
+    return Object.values(grouped)
+      .map((group) => ({
+        ...group,
+        lists: group.lists.sort((left, right) => right.clients.length - left.clients.length),
+      }))
+      .sort((left, right) => left.placementCode.localeCompare(right.placementCode));
+  }, [selectedStrategy, subgroupCards]);
 
   if (!portfolio) {
     return <p className="p-8 text-sm text-slate-500">Cargando cartera asignada...</p>;
@@ -604,8 +963,7 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
   const strategyOrder = ["AL_DIA", "PREVENTIVO", "FMORA1", "MMORA2", "HMORA3", "AMORA4", "BMORA5", "CMORA6", "DMORA7", "VAGENCIASEXTERNASINTERNO"];
   const strategyCards = [
     ...strategyOrder
-      .filter((key) => Object.prototype.hasOwnProperty.call(metrics.strategy_summary || {}, key))
-      .map((key) => ({ key, label: key, value: metrics.strategy_summary[key] })),
+      .map((key) => ({ key, label: key, value: (metrics.strategy_summary || {})[key] || 0 })),
     { key: "HMR", label: "HMR", value: metrics.hmr_candidates }
   ];
   const maxStrategyValue = Math.max(1, ...strategyCards.map((item) => item.value || 0));
@@ -680,11 +1038,12 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
       .sort((left, right) => right.expectedRecovery - left.expectedRecovery)
       .slice(0, 3);
     let digitalChannel = "WhatsApp + SMS";
-    if (selectedStrategy === "AL_DIA" || selectedStrategy === "PREVENTIVO") digitalChannel = "Chatbot WhatsApp + SMS";
+    if (selectedStrategy === "AL_DIA") digitalChannel = "Monitoreo sin contacto";
+    else if (selectedStrategy === "PREVENTIVO") digitalChannel = "Chatbot WhatsApp + SMS";
     else if (selectedStrategy === "FMORA1" || selectedStrategy === "MMORA2") digitalChannel = "Chatbot WhatsApp + SMS";
     else if (["HMORA3", "AMORA4"].includes(selectedStrategy)) digitalChannel = "Llamada telefonica + WhatsApp";
     else if (["BMORA5", "CMORA6", "DMORA7"].includes(selectedStrategy)) digitalChannel = "Llamada telefonica intensiva + WhatsApp";
-    else if (selectedStrategy === "VAGENCIASEXTERNASINTERNO") digitalChannel = "Llamada telefonica + barrido digital";
+    else if (selectedStrategy === "VAGENCIASEXTERNASINTERNO") digitalChannel = "Callbot + llamada humana + WhatsApp";
     else if (selectedStrategy === "HMR") digitalChannel = "Llamada consultiva + WhatsApp";
     else if (avgRisk >= 80) digitalChannel = "Llamada telefonica + WhatsApp";
     else if (avgRisk >= 60) digitalChannel = "WhatsApp guiado + SMS";
@@ -694,7 +1053,10 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
     let recommendationTitle = "Recuperacion guiada por IA";
     let recommendationBody = `${clients.filter((client) => !client.worked_today).length} clientes pendientes. La IA recomienda iniciar por ${digitalChannel.toLowerCase()} segun el perfil consolidado de la estrategia.`;
 
-    if (selectedStrategy === "AL_DIA" || selectedStrategy === "PREVENTIVO") {
+    if (selectedStrategy === "AL_DIA") {
+      recommendationTitle = "Seguimiento silencioso";
+      recommendationBody = "La cuenta está al día. En esta estrategia no se recomienda contacto; solo monitoreo y preparación para actuar si entra a Preventivo.";
+    } else if (selectedStrategy === "PREVENTIVO") {
       recommendationTitle = "Contencion temprana";
       recommendationBody = `La IA detecta cartera de baja friccion. Prioriza ${digitalChannel.toLowerCase()} y recordatorios breves para capturar pago antes de que escale la mora. El chatbot debe resolver saldo, fecha y link de pago sin friccion.`;
     } else if (selectedStrategy === "FMORA1" || selectedStrategy === "MMORA2") {
@@ -707,8 +1069,8 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
       recommendationTitle = "Recuperacion intensiva";
       recommendationBody = `La severidad de mora pide una postura agresiva. La IA prioriza ${digitalChannel.toLowerCase()} como canal de apertura y recomienda escalar rapido los casos sin contacto efectivo.`;
     } else if (selectedStrategy === "VAGENCIASEXTERNASINTERNO") {
-      recommendationTitle = "Canal mixto interno/externo";
-      recommendationBody = `La IA detecta cartera para barrido y depuracion. Usa ${digitalChannel.toLowerCase()} para filtrar respuesta temprana y deriva los no contactados a flujo especializado.`;
+      recommendationTitle = "Recovery por placements";
+      recommendationBody = `La IA detecta cartera Recovery. Prioriza ${digitalChannel.toLowerCase()} y mueve los casos entre placement, agencia y lista operativa según respuesta y pago.`;
     } else if (selectedStrategy === "HMR") {
       recommendationTitle = "Mitigacion y solucion";
       recommendationBody = `La IA identifica oportunidad de herramientas HMR. Prioriza ${digitalChannel.toLowerCase()} con discurso de solucion y enfoque en capacidad de pago.`;
@@ -743,16 +1105,15 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
   const selectedAccounts = activeClient?.accounts.filter((account) => managementForm.account_ids.includes(String(account.id))) || [];
   const selectedAccountsMinimum = selectedAccounts.reduce((sum, account) => sum + Number(account.pago_minimo || 0), 0);
 
-  if (queueMode && activeClient) {
+  if (queueMode && !activeClient) {
     return (
       <div className="min-h-screen bg-[linear-gradient(180deg,#ebf1f7,#f8fafc)] px-4 py-4 md:px-6">
+        {demographicModal}
         <div className="mx-auto max-w-[1760px]">
           <header className="overflow-hidden rounded-[28px] bg-[#24384d] text-white shadow-panel">
             <div className="flex flex-col gap-3 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex items-center gap-4">
-                <div className="h-14 w-[140px] overflow-hidden rounded-2xl bg-white/10">
-                  <img src={brandLogo} alt="360CollectPlus" className="h-full w-full scale-[1.32] object-cover object-center" />
-                </div>
+                <BrandLogo size="header" />
                 <div>
                   <p className="text-xs uppercase tracking-[0.28em] text-cyan-200">Lista de trabajo diaria</p>
                   <h1 className="mt-2 text-[2.25rem] font-bold leading-tight">Consola de gestion del collector</h1>
@@ -760,14 +1121,15 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
               </div>
               <div className="grid gap-2 text-sm text-slate-200 lg:text-right">
                 <p>Usuario: {auth.user.nombre}</p>
-                <p>Cola activa: {searchedQueueClients.length ? queueIndex + 1 : 0} de {searchedQueueClients.length}</p>
+                {(auth.user.rol === "Admin" || auth.user.rol === "Supervisor") ? <p>Vista de cartera: {scopedCollectorLabel}</p> : null}
+                <p>Cola activa: 0 de 0</p>
                 <p>Fecha: {new Date().toLocaleDateString("es-SV")}</p>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3 bg-[#31485f] px-5 py-3 text-sm font-semibold">
               <button onClick={() => setQueueMode(false)} className="rounded-full bg-white px-4 py-2 text-ink">Volver al panel</button>
-              <button onClick={() => setQueueIndex((current) => Math.max(0, current - 1))} className="rounded-full bg-white/10 px-4 py-2">Anterior</button>
-              <button onClick={() => setQueueIndex((current) => Math.min(searchedQueueClients.length - 1, current + 1))} className="rounded-full bg-white/10 px-4 py-2">Siguiente</button>
+              <button onClick={() => setQueueIndex(0)} className="rounded-full bg-white/10 px-4 py-2">Anterior</button>
+              <button onClick={() => setQueueIndex(0)} className="rounded-full bg-white/10 px-4 py-2">Siguiente</button>
               <span className="rounded-full bg-emerald-500/20 px-4 py-2">Pendientes: {metrics.remaining_today}</span>
               <span className="rounded-full bg-amber-500/20 px-4 py-2">Callbacks hoy: {metrics.scheduled_callbacks_today}</span>
               <div className="flex min-w-[420px] flex-1 flex-wrap items-center gap-2 rounded-[22px] border border-white/10 bg-white/10 p-2">
@@ -775,6 +1137,8 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
                   value={queueSearchMode}
                   onChange={(event) => {
                     setQueueSearchMode(event.target.value);
+                    setQueueSearchInput("");
+                    setQueueSearch("");
                     setQueueIndex(0);
                   }}
                   className="rounded-2xl border border-white/10 bg-[#24384d] px-4 py-2 text-sm font-semibold text-white outline-none"
@@ -785,26 +1149,143 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
                   <option value="nombre">Nombre</option>
                   <option value="cuenta">Numero de cuenta</option>
                   <option value="plastico">Numero de plastico</option>
+                  <option value="telefono">Numero de telefono</option>
                 </select>
                 <input
-                  value={queueSearch}
-                  onChange={(event) => {
-                    setQueueSearch(event.target.value);
-                    setQueueIndex(0);
+                  value={queueSearchInput}
+                  onChange={(event) => setQueueSearchInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      applyQueueSearch();
+                    }
                   }}
                   placeholder={`Buscar por ${getSearchModeLabel(queueSearchMode).toLowerCase()}...`}
                   className="min-w-[220px] flex-1 rounded-2xl border border-white/10 bg-transparent px-4 py-2 text-white placeholder:text-slate-300 outline-none"
                 />
-                <span className="rounded-full bg-[#1f3040] px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-cyan-100">
-                  {getSearchModeLabel(queueSearchMode)}
-                </span>
+                <button
+                  type="button"
+                  onClick={applyQueueSearch}
+                  className="rounded-2xl bg-cyan-400 px-4 py-2 text-sm font-bold text-slate-900 transition-colors hover:bg-cyan-300"
+                >
+                  Buscar
+                </button>
               </div>
               <span className="rounded-full bg-white/10 px-4 py-2 text-xs text-slate-100">
                 {queueSearchHelp[queueSearchMode]}
               </span>
-              {queueSearch.trim() && searchedQueueClients.length === 0 ? (
+              {lookupLoading ? (
+                <span className="rounded-full bg-cyan-500/20 px-4 py-2 text-xs text-cyan-100">
+                  Buscando cliente en el sistema...
+                </span>
+              ) : queueSearch.trim() ? (
                 <span className="rounded-full bg-red-500/20 px-4 py-2 text-xs text-red-100">
                   Sin coincidencias para la búsqueda actual.
+                </span>
+              ) : null}
+            </div>
+          </header>
+
+          <section className="mt-4 rounded-[28px] border border-slate-200 bg-white p-8 shadow-panel">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-ocean">Sin resultados en esta cola</p>
+            <h2 className="mt-3 text-3xl font-bold text-ink">La búsqueda no coincide con la cartera visible</h2>
+            <p className="mt-3 max-w-4xl text-base leading-7 text-slate-600">
+              {auth.user.rol === "Admin" || auth.user.rol === "Supervisor"
+                ? `Esta pantalla muestra únicamente la cartera asignada a ${scopedCollectorLabel}. Un cliente puede existir en la base general y aún así no aparecer aquí si no está dentro de esta cola de trabajo.`
+                : "Si eres usuario interno, la búsqueda también consulta el sistema completo; si eres agencia externa, solo consulta tus cuentas asignadas."}
+            </p>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (queueMode && activeClient) {
+    return (
+      <div className="min-h-screen bg-[linear-gradient(180deg,#ebf1f7,#f8fafc)] px-4 py-4 md:px-6">
+        {demographicModal}
+        <div className="mx-auto max-w-[1760px]">
+          <header className="overflow-hidden rounded-[28px] bg-[#24384d] text-white shadow-panel">
+            <div className="flex flex-col gap-3 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-center gap-4">
+                <BrandLogo size="header" />
+                <div>
+                  <p className="text-xs uppercase tracking-[0.28em] text-cyan-200">Lista de trabajo diaria</p>
+                  <h1 className="mt-2 text-[2.25rem] font-bold leading-tight">Consola de gestion del collector</h1>
+                </div>
+              </div>
+              <div className="grid gap-2 text-sm text-slate-200 lg:text-right">
+                <p>Usuario: {auth.user.nombre}</p>
+                {(auth.user.rol === "Admin" || auth.user.rol === "Supervisor") ? <p>Vista de cartera: {scopedCollectorLabel}</p> : null}
+                <p>Cola activa: {visibleQueueClients.length ? queueIndex + 1 : 0} de {visibleQueueClients.length}</p>
+                <p>Fecha: {new Date().toLocaleDateString("es-SV")}</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 bg-[#31485f] px-5 py-3 text-sm font-semibold">
+              <button onClick={() => setQueueMode(false)} className="rounded-full bg-white px-4 py-2 text-ink">Volver al panel</button>
+              <button onClick={() => setQueueIndex((current) => Math.max(0, current - 1))} className="rounded-full bg-white/10 px-4 py-2">Anterior</button>
+              <button onClick={() => setQueueIndex((current) => Math.min(visibleQueueClients.length - 1, current + 1))} className="rounded-full bg-white/10 px-4 py-2">Siguiente</button>
+              <span className="rounded-full bg-emerald-500/20 px-4 py-2">Pendientes: {metrics.remaining_today}</span>
+              <span className="rounded-full bg-amber-500/20 px-4 py-2">Callbacks hoy: {metrics.scheduled_callbacks_today}</span>
+              <div className="flex min-w-[420px] flex-1 flex-wrap items-center gap-2 rounded-[22px] border border-white/10 bg-white/10 p-2">
+                <select
+                  value={queueSearchMode}
+                  onChange={(event) => {
+                    setQueueSearchMode(event.target.value);
+                    setQueueSearchInput("");
+                    setQueueSearch("");
+                    setQueueIndex(0);
+                  }}
+                  className="rounded-2xl border border-white/10 bg-[#24384d] px-4 py-2 text-sm font-semibold text-white outline-none"
+                >
+                  <option value="all">Busqueda general</option>
+                  <option value="unico">Numero Unico</option>
+                  <option value="dui">DUI</option>
+                  <option value="nombre">Nombre</option>
+                  <option value="cuenta">Numero de cuenta</option>
+                  <option value="plastico">Numero de plastico</option>
+                  <option value="telefono">Numero de telefono</option>
+                </select>
+                <input
+                  value={queueSearchInput}
+                  onChange={(event) => setQueueSearchInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      applyQueueSearch();
+                    }
+                  }}
+                  placeholder={`Buscar por ${getSearchModeLabel(queueSearchMode).toLowerCase()}...`}
+                  className="min-w-[220px] flex-1 rounded-2xl border border-white/10 bg-transparent px-4 py-2 text-white placeholder:text-slate-300 outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={applyQueueSearch}
+                  className="rounded-2xl bg-cyan-400 px-4 py-2 text-sm font-bold text-slate-900 transition-colors hover:bg-cyan-300"
+                >
+                  Buscar
+                </button>
+              </div>
+              <span className="rounded-full bg-white/10 px-4 py-2 text-xs text-slate-100">
+                {queueSearchHelp[queueSearchMode]}
+              </span>
+              {lookupLoading ? (
+                <span className="rounded-full bg-cyan-500/20 px-4 py-2 text-xs text-cyan-100">
+                  Buscando cliente en el sistema...
+                </span>
+              ) : queueSearch.trim() && visibleQueueClients.length === 0 ? (
+                <span className="rounded-full bg-red-500/20 px-4 py-2 text-xs text-red-100">
+                  Sin coincidencias para la búsqueda actual.
+                </span>
+              ) : null}
+              {queueSearch.trim() && searchedQueueClients.length === 0 && lookupClient ? (
+                <span className="rounded-full bg-emerald-500/20 px-4 py-2 text-xs text-emerald-100">
+                  Resultado encontrado fuera de la cola visible.
+                </span>
+              ) : null}
+              {queueSearch.trim() && searchedQueueClients.length === 0 && lookupClient && !lookupMatchesCurrentFilters ? (
+                <span className="rounded-full bg-amber-500/20 px-4 py-2 text-xs text-amber-100">
+                  Cliente encontrado en {lookupClient.estrategia_principal || "otra estrategia"}.
                 </span>
               ) : null}
             </div>
@@ -817,9 +1298,18 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
             <section className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-panel">
               <div className="flex items-center justify-between border-b border-cyan-200 pb-2">
                 <h2 className="text-[1.7rem] font-bold text-ink">Cliente</h2>
-                <button type="button" onClick={() => toggleSection("client")} className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">
-                  {collapsedSections.client ? "Expandir" : "Minimizar"}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={openDemographicEditor}
+                    className="rounded-full bg-ocean px-3 py-1.5 text-xs font-semibold text-white"
+                  >
+                    Editar datos
+                  </button>
+                  <button type="button" onClick={() => toggleSection("client")} className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-slate-600">
+                    {collapsedSections.client ? "Expandir" : "Minimizar"}
+                  </button>
+                </div>
               </div>
               {!collapsedSections.client ? <div className="mt-3 grid gap-2 text-sm text-slate-700">
                 <p><span className="font-semibold text-ink">Nombre:</span> {activeClient.nombres} {activeClient.apellidos}</p>
@@ -831,6 +1321,8 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
                 <p><span className="font-semibold text-ink">Direccion:</span> {activeClient.direccion || "Sin direccion registrada"}</p>
                 <p><span className="font-semibold text-ink">Segmento:</span> {activeClient.segmento || "Sin segmento"}</p>
                 <p><span className="font-semibold text-ink">Subgrupo:</span> {activeClient.estrategia_subgrupo || activeClient.estrategia_principal}</p>
+                <p><span className="font-semibold text-ink">Cartera asignada:</span> {activeClient.group_id || activeClient.sublista_trabajo || "GENERAL"}</p>
+                <p><span className="font-semibold text-ink">Placement:</span> {activeClient.placement_code || "N/D"}</p>
                 <p><span className="font-semibold text-ink">Cabeza de mora:</span> {activeClient.producto_cabeza || "Sin definir"} · {activeClient.dias_mora_cabeza || 0} dias</p>
                 <p><span className="font-semibold text-ink">Riesgo:</span> {Math.round(activeClient.score_riesgo * 100)}%</p>
                 <p><span className="font-semibold text-ink">Contacto sugerido:</span> {activeClient.telefono ? "Telefono principal" : activeClient.email ? "Correo" : "Actualizar datos"}</p>
@@ -887,6 +1379,26 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
                 <p><span className="font-semibold text-ink">Estado operativo:</span> {activeStatus.label}</p>
                 <div className={`mt-2 rounded-2xl px-4 py-3 text-sm font-semibold ${selectedAccount?.dias_mora >= 60 ? "bg-red-500 text-white" : "bg-amber-100 text-amber-800"}`}>
                   {selectedAccount?.dias_mora >= 60 ? "Cliente en mora alta" : "Cliente requiere seguimiento"}
+                </div>
+                <div className="mt-3 rounded-2xl border border-cyan-200 bg-cyan-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-700">Siguiente mejor acción</p>
+                  <p className="mt-2 text-sm font-semibold text-ink">{activeClient.ai_next_action || "Inicia por la cuenta cabeza y valida intención de pago."}</p>
+                  <p className="mt-2 text-sm text-slate-700">Canal sugerido: <span className="font-semibold text-ink">{activeClient.ai_best_channel || "Llamada"}</span></p>
+                  <p className="mt-1 text-sm text-slate-700">Riesgo de ruptura: <span className="font-semibold text-ink">{((activeClient.ai_promise_break_probability || 0) * 100).toFixed(0)}%</span></p>
+                  <p className="mt-2 text-sm text-slate-600">{activeClient.ai_talk_track || "Usa un discurso breve, valida capacidad de pago y lleva el caso al siguiente paso concreto."}</p>
+                  <button
+                    type="button"
+                    onClick={() => setManagementForm((current) => ({
+                      ...current,
+                      contact_channel: (activeClient.ai_best_channel || "").toLowerCase().includes("whatsapp") ? "WhatsApp" : (activeClient.ai_best_channel || "").toLowerCase().includes("sms") ? "SMS" : "Llamada",
+                      notes: current.notes?.trim()
+                        ? current.notes
+                        : `${activeClient.ai_next_action || "Seguimiento guiado por IA"}\n\nGuion sugerido: ${activeClient.ai_talk_track || "Validar intención de pago y ofrecer siguiente paso concreto."}`,
+                    }))}
+                    className="mt-3 rounded-xl bg-ocean px-4 py-2 text-sm font-semibold text-white"
+                  >
+                    Aplicar sugerencia al formulario
+                  </button>
                 </div>
               </div>
             </section>
@@ -1053,10 +1565,7 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
         <header className="rounded-2xl bg-brand-gradient px-6 py-5 shadow-card-lg md:flex md:items-center md:justify-between relative overflow-hidden">
           <div className="absolute inset-0 opacity-10" style={{background:"radial-gradient(circle at 80% 50%, rgba(0,180,166,0.6) 0%, transparent 60%)"}} />
           <div className="relative flex items-center gap-4">
-            <div className="h-12 w-[130px] flex-shrink-0 overflow-hidden">
-              <img src={brandLogo} alt="360CollectPlus" className="h-full w-full scale-[1.28] object-cover object-center"
-                style={{filter:"drop-shadow(0 2px 12px rgba(0,180,166,0.5))"}} />
-            </div>
+            <BrandLogo size="header" className="flex-shrink-0" />
             <div>
               <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-teal">
                 <span className="h-1.5 w-1.5 rounded-full bg-teal pulse-dot" />{auth.user.rol}
@@ -1073,7 +1582,7 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
             <button onClick={onRefresh} disabled={saving} className="rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-white/20 disabled:opacity-50">
               ↻ Actualizar
             </button>
-            <button onClick={onLogout} className="rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-white/20">Cerrar sesión</button>
+            <button onClick={onLogout} className="rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-white/20">{exitLabel}</button>
           </div>
         </header>
 
@@ -1154,6 +1663,7 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
                         setQueueSearch("");
                         setQueueIndex(firstPendingIndex === -1 ? 0 : firstPendingIndex);
                         setSelectedClientId(queueClients[firstPendingIndex === -1 ? 0 : firstPendingIndex]?.id || null);
+                        scrollToTop();
                       }}
                       disabled={!selectedStrategy || !queueClients.length}
                       className="rounded-full bg-ink px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
@@ -1176,6 +1686,28 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
                     onClick={() => {
                       setSelectedStrategy(item.key);
                       setSelectedSubgroup(null);
+                      scrollToTop();
+                    }}
+                    onDoubleClick={() => {
+                      setSelectedStrategy(item.key);
+                      const strategyClients = item.key === "HMR"
+                        ? portfolio.clients.filter((client) => client.hmr_elegible)
+                        : portfolio.clients.filter((client) => client.estrategia_principal === item.key);
+                      if (!strategyClients.length || item.key === "AL_DIA") return;
+                      const nextSubgroup = item.key === "VAGENCIASEXTERNASINTERNO"
+                        ? (() => {
+                            const firstRecovery = strategyClients[0];
+                            const placementCode = firstRecovery?.placement_code || "SIN_PLACEMENT";
+                            const listCode = firstRecovery?.group_id || firstRecovery?.sublista_trabajo || "GENERAL";
+                            return `PLACEMENT_${placementCode}_${listCode}`;
+                          })()
+                        : (strategyClients[0]?.estrategia_subgrupo || `${item.key}CARDS`);
+                      setSelectedSubgroup(nextSubgroup);
+                      setQueueMode(true);
+                      setQueueSearch("");
+                      setQueueIndex(0);
+                      setSelectedClientId(strategyClients[0]?.id || null);
+                      scrollToTop();
                     }}
                     className={`rounded-[24px] border p-3 text-left transition ${selectedStrategy === item.key ? "border-ocean bg-[linear-gradient(135deg,#e4fbff,#f6fbff)] shadow-lg" : "border-slate-200 bg-white hover:-translate-y-0.5 hover:border-cyan-200 hover:shadow-lg"}`}
                   >
@@ -1221,13 +1753,17 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
                           <p className="text-xs uppercase tracking-[0.18em] text-ocean">Estados y subgrupos</p>
                           <p className="mt-2 text-base font-semibold text-ink">
                             {activeSubgroupCard
-                              ? `${activeSubgroupCard.stateCode} · ${activeSubgroupCard.familyLabel}`
+                              ? selectedStrategy === "VAGENCIASEXTERNASINTERNO"
+                                ? `${activeSubgroupCard.stateCode} · ${activeSubgroupCard.listCode || activeSubgroupCard.familyLabel}`
+                                : `${activeSubgroupCard.stateCode} · ${activeSubgroupCard.familyLabel}`
                               : "Selecciona un subgrupo para entrar a la cola"}
                           </p>
                           <p className="mt-1 text-sm text-slate-600">
                             {activeSubgroupCard
                               ? `${activeSubgroupCard.key} con ${activeSubgroupCard.clients.length} clientes visibles para gestionar.`
-                              : `El estado principal de esta estrategia es ${strategyStateCode || "N/D"} y se divide por familia de producto.`}
+                              : selectedStrategy === "VAGENCIASEXTERNASINTERNO"
+                                ? "Recovery se divide por placement y lista operativa para iniciar cola de trabajo."
+                                : `El estado principal de esta estrategia es ${strategyStateCode || "N/D"} y se divide por familia de producto.`}
                           </p>
                         </div>
                         <span className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-ink">
@@ -1235,39 +1771,110 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
                         </span>
                       </div>
 
-                      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                        {subgroupCards.map((section) => (
-                          <button
-                            key={`subgroup-card-${section.key}`}
-                            type="button"
-                            onClick={() => {
-                              setSelectedSubgroup(section.key);
-                              setSelectedClientId(section.clients[0]?.id || null);
-                            }}
-                            className={`rounded-[22px] border p-4 text-left transition ${
-                              selectedSubgroup === section.key
-                                ? "border-ocean bg-white shadow-lg"
-                                : "border-white/70 bg-white/80 hover:-translate-y-0.5 hover:border-cyan-200 hover:bg-white"
-                            }`}
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{section.stateCode}</p>
-                                <h4 className="mt-2 text-sm font-semibold text-ink">{section.familyLabel}</h4>
-                                <p className="mt-1 text-xs text-slate-500">{section.key}</p>
+                      {selectedStrategy === "VAGENCIASEXTERNASINTERNO" ? (
+                        <div className="mt-4 space-y-4">
+                          {recoveryPlacementGroups.map((placement) => (
+                            <section key={`placement-${placement.placementCode}`} className="rounded-[24px] border border-cyan-100 bg-white/75 p-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">Placement</p>
+                                  <h4 className="mt-2 text-lg font-semibold text-ink">{placement.placementCode}</h4>
+                                  <p className="mt-1 text-sm text-slate-600">Carteras activas de este placement dentro de Recovery.</p>
+                                </div>
+                                <div className="flex flex-wrap gap-2 text-xs">
+                                  <span className="rounded-full bg-cyan-50 px-3 py-1 font-semibold text-ocean">{placement.totalClients} clientes</span>
+                                  <span className="rounded-full bg-white px-3 py-1 font-semibold text-slate-700">Pendientes {placement.pendingCount}</span>
+                                  <span className="rounded-full bg-white px-3 py-1 font-semibold text-slate-700">Callbacks {placement.callbackCount}</span>
+                                </div>
                               </div>
-                              <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-ocean">
-                                {section.clients.length}
-                              </span>
-                            </div>
-                            <div className="mt-4 grid gap-2 text-xs text-slate-600">
-                              <p>Pendientes: <span className="font-semibold text-ink">{section.pendingCount}</span></p>
-                              <p>Callbacks: <span className="font-semibold text-ink">{section.callbackCount}</span></p>
-                              <p>Estado manual: <span className="font-semibold text-ink">{section.stateCode}</span></p>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
+                              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                                {placement.lists.map((section) => (
+                                  <button
+                                    key={`subgroup-card-${section.key}`}
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedSubgroup(section.key);
+                                      setSelectedClientId(section.clients[0]?.id || null);
+                                    }}
+                                    onDoubleClick={() => {
+                                      setSelectedSubgroup(section.key);
+                                      setQueueMode(true);
+                                      setQueueSearch("");
+                                      setQueueIndex(0);
+                                      setSelectedClientId(section.clients[0]?.id || null);
+                                      scrollToTop();
+                                    }}
+                                    className={`rounded-[22px] border p-4 text-left transition ${
+                                      selectedSubgroup === section.key
+                                        ? "border-ocean bg-white shadow-lg"
+                                        : "border-white/70 bg-slate-50/85 hover:-translate-y-0.5 hover:border-cyan-200 hover:bg-white"
+                                    }`}
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div>
+                                        <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{section.stateCode}</p>
+                                        <h4 className="mt-2 text-sm font-semibold text-ink">{section.listCode || section.familyLabel}</h4>
+                                        <p className="mt-1 text-xs text-slate-500">{section.description}</p>
+                                      </div>
+                                      <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-ocean">
+                                        {section.clients.length}
+                                      </span>
+                                    </div>
+                                    <div className="mt-4 grid gap-2 text-xs text-slate-600">
+                                      <p>Pendientes: <span className="font-semibold text-ink">{section.pendingCount}</span></p>
+                                      <p>Callbacks: <span className="font-semibold text-ink">{section.callbackCount}</span></p>
+                                      <p>Cartera: <span className="font-semibold text-ink">{section.listCode || "GENERAL"}</span></p>
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            </section>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                          {subgroupCards.map((section) => (
+                            <button
+                              key={`subgroup-card-${section.key}`}
+                              type="button"
+                              onClick={() => {
+                                setSelectedSubgroup(section.key);
+                                setSelectedClientId(section.clients[0]?.id || null);
+                              }}
+                              onDoubleClick={() => {
+                                setSelectedSubgroup(section.key);
+                                if (selectedStrategy === "AL_DIA") return;
+                                setQueueMode(true);
+                                setQueueSearch("");
+                                setQueueIndex(0);
+                                setSelectedClientId(section.clients[0]?.id || null);
+                                scrollToTop();
+                              }}
+                              className={`rounded-[22px] border p-4 text-left transition ${
+                                selectedSubgroup === section.key
+                                  ? "border-ocean bg-white shadow-lg"
+                                  : "border-white/70 bg-white/80 hover:-translate-y-0.5 hover:border-cyan-200 hover:bg-white"
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{section.stateCode}</p>
+                                  <h4 className="mt-2 text-sm font-semibold text-ink">{section.familyLabel}</h4>
+                                  <p className="mt-1 text-xs text-slate-500">{section.key}</p>
+                                </div>
+                                <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-ocean">
+                                  {section.clients.length}
+                                </span>
+                              </div>
+                              <div className="mt-4 grid gap-2 text-xs text-slate-600">
+                                <p>Pendientes: <span className="font-semibold text-ink">{section.pendingCount}</span></p>
+                                <p>Callbacks: <span className="font-semibold text-ink">{section.callbackCount}</span></p>
+                                <p>Estado manual: <span className="font-semibold text-ink">{section.stateCode}</span></p>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ) : null}
 
@@ -1366,49 +1973,106 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
                   </p>
                 </section>
               ) : null}
-              {subgroupCards.map((section) => (
-                <section
-                  key={`sublist-${section.key}`}
-                  className={`rounded-3xl border p-4 ${selectedSubgroup === section.key ? "border-ocean bg-cyan-100/80" : "border-cyan-100 bg-cyan-50/60"}`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h3 className="text-sm font-semibold text-ink">{section.stateCode} · {section.familyLabel}</h3>
-                      <p className="mt-1 text-xs text-slate-500">{section.key} · {section.description}</p>
-                    </div>
-                    <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-ink">{section.clients.length}</span>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.14em] text-slate-600">
-                    <span className="rounded-full bg-white px-3 py-1">Pendientes {section.pendingCount}</span>
-                    <span className="rounded-full bg-white px-3 py-1">Callbacks {section.callbackCount}</span>
-                  </div>
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedSubgroup(section.key);
-                        setSelectedClientId(section.clients[0]?.id || null);
-                      }}
-                      className="rounded-full bg-ink px-4 py-2 text-xs font-semibold text-white"
+              {selectedStrategy === "VAGENCIASEXTERNASINTERNO"
+                ? recoveryPlacementGroups.map((placement) => (
+                    <section key={`sidebar-placement-${placement.placementCode}`} className="rounded-3xl border border-cyan-100 bg-cyan-50/60 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-ink">{placement.placementCode}</h3>
+                          <p className="mt-1 text-xs text-slate-500">Placement Recovery</p>
+                        </div>
+                        <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-ink">{placement.totalClients}</span>
+                      </div>
+                      <div className="mt-3 space-y-3">
+                        {placement.lists.map((section) => (
+                          <div key={`sublist-${section.key}`} className={`rounded-2xl border p-3 ${selectedSubgroup === section.key ? "border-ocean bg-white" : "border-white/80 bg-white/80"}`}>
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <h4 className="text-sm font-semibold text-ink">{section.listCode || section.key}</h4>
+                                <p className="mt-1 text-xs text-slate-500">{section.description}</p>
+                              </div>
+                              <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-ocean">{section.clients.length}</span>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.14em] text-slate-600">
+                              <span className="rounded-full bg-white px-3 py-1">Pendientes {section.pendingCount}</span>
+                              <span className="rounded-full bg-white px-3 py-1">Callbacks {section.callbackCount}</span>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedSubgroup(section.key);
+                                  setSelectedClientId(section.clients[0]?.id || null);
+                                }}
+                                className="rounded-full bg-ink px-4 py-2 text-xs font-semibold text-white"
+                              >
+                                Ver cartera
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedSubgroup(section.key);
+                                  setQueueMode(true);
+                                  setQueueSearch("");
+                                  setQueueIndex(0);
+                                  setSelectedClientId(section.clients[0]?.id || null);
+                                  scrollToTop();
+                                }}
+                                className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-ink"
+                              >
+                                Iniciar cola
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ))
+                : subgroupCards.map((section) => (
+                    <section
+                      key={`sublist-${section.key}`}
+                      className={`rounded-3xl border p-4 ${selectedSubgroup === section.key ? "border-ocean bg-cyan-100/80" : "border-cyan-100 bg-cyan-50/60"}`}
                     >
-                      Ver subgrupo
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedSubgroup(section.key);
-                        setQueueMode(true);
-                        setQueueSearch("");
-                        setQueueIndex(0);
-                        setSelectedClientId(section.clients[0]?.id || null);
-                      }}
-                      className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-ink"
-                    >
-                      Iniciar cola
-                    </button>
-                  </div>
-                </section>
-              ))}
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-ink">{section.stateCode} · {section.familyLabel}</h3>
+                          <p className="mt-1 text-xs text-slate-500">{section.key} · {section.description}</p>
+                        </div>
+                        <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-ink">{section.clients.length}</span>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.14em] text-slate-600">
+                        <span className="rounded-full bg-white px-3 py-1">Pendientes {section.pendingCount}</span>
+                        <span className="rounded-full bg-white px-3 py-1">Callbacks {section.callbackCount}</span>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedSubgroup(section.key);
+                            setSelectedClientId(section.clients[0]?.id || null);
+                          }}
+                          className="rounded-full bg-ink px-4 py-2 text-xs font-semibold text-white"
+                        >
+                          Ver subgrupo
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedSubgroup(section.key);
+                            setQueueMode(true);
+                            setQueueSearch("");
+                            setQueueIndex(0);
+                            setSelectedClientId(section.clients[0]?.id || null);
+                            scrollToTop();
+                          }}
+                          disabled={selectedStrategy === "AL_DIA"}
+                          className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-ink"
+                        >
+                          {selectedStrategy === "AL_DIA" ? "Solo monitoreo" : "Iniciar cola"}
+                        </button>
+                      </div>
+                    </section>
+                  ))}
               {selectedSubgroup ? (
                 <button
                   type="button"
@@ -1564,6 +2228,13 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
                         <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Contacto</p>
                         <p className="mt-2 text-sm text-slate-700">{activeClient.telefono || "Pendiente"}</p>
                         <p className="mt-1 text-sm text-slate-700">{activeClient.email || "Pendiente"}</p>
+                        <button
+                          type="button"
+                          onClick={openDemographicEditor}
+                          className="mt-3 rounded-full bg-ocean px-4 py-2 text-xs font-semibold text-white"
+                        >
+                          Agregar o modificar datos
+                        </button>
                       </div>
                       <div className="rounded-3xl border border-slate-200 bg-white p-4">
                         <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Agenda y gestion</p>
@@ -1626,7 +2297,7 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
                     <form
                       onSubmit={(event) => {
                         event.preventDefault();
-                        onUpdateDemographics(activeClient, demographicForm);
+                        onUpdateDemographics(activeClient, demographicForm, onRefresh);
                       }}
                       className="mt-5 grid gap-6 xl:grid-cols-[1fr_0.95fr]"
                     >
@@ -1894,11 +2565,22 @@ function CollectorWorkspace({ auth, portfolio, onLogout, onRefresh, onSubmitMana
   );
 }
 
-function SupervisorWorkspace({ auth, overview, onLogout, onRefresh, onApproveReview, onApproveReviewBatch, saving, error }) {
+function SupervisorWorkspace({ auth, overview, systemClients, onSearchSystemClients, onLogout, onRefresh, onApproveReview, onApproveReviewBatch, onOpenCollectorPreview, collectorPreviewLoading, saving, error }) {
   const [showReviewQueue, setShowReviewQueue] = useState(false);
   const [reviewIndex, setReviewIndex] = useState(0);
   const [reviewPage, setReviewPage] = useState(1);
   const [reviewProgress, setReviewProgress] = useState({});
+  const [selectedCollectorId, setSelectedCollectorId] = useState("");
+  const [systemSearch, setSystemSearch] = useState("");
+  const supervisedCollectors = (overview?.collectors || []).map((collector) => collector.user || collector).filter((collector) => collector?.id);
+  useEffect(() => {
+    if (!supervisedCollectors.length) {
+      setSelectedCollectorId("");
+      return;
+    }
+    setSelectedCollectorId((current) => current || String(supervisedCollectors[0].id));
+  }, [overview]);
+
   if (!overview) {
     return <p className="p-8 text-sm text-slate-500">Cargando equipo supervisado...</p>;
   }
@@ -1921,9 +2603,7 @@ function SupervisorWorkspace({ auth, overview, onLogout, onRefresh, onApproveRev
           <header className="overflow-hidden rounded-[30px] bg-[#24384d] text-white shadow-panel">
             <div className="flex flex-col gap-4 px-6 py-5 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex items-center gap-4">
-                <div className="h-14 w-[140px] overflow-hidden rounded-2xl bg-white/10">
-                  <img src={brandLogo} alt="360CollectPlus" className="h-full w-full scale-[1.32] object-cover object-center" />
-                </div>
+                <BrandLogo size="header" />
                 <div>
                   <p className="text-xs uppercase tracking-[0.28em] text-orange-200">Revision supervisor</p>
                   <h1 className="mt-2 text-3xl font-bold">Cola de acuerdos fuera de politica</h1>
@@ -2147,14 +2827,11 @@ function SupervisorWorkspace({ auth, overview, onLogout, onRefresh, onApproveRev
 
   return (
     <div className="min-h-screen px-4 py-5 md:px-8">
-      <div className="mx-auto max-w-7xl">
+      <div className="mx-auto max-w-[1680px]">
         <header className="rounded-2xl bg-brand-gradient px-6 py-5 shadow-card-lg md:flex md:items-center md:justify-between relative overflow-hidden">
           <div className="absolute inset-0 opacity-10" style={{background:"radial-gradient(circle at 80% 50%, rgba(0,180,166,0.6) 0%, transparent 60%)"}} />
           <div className="relative flex items-center gap-4">
-            <div className="h-12 w-[130px] flex-shrink-0 overflow-hidden">
-              <img src={brandLogo} alt="360CollectPlus" className="h-full w-full scale-[1.28] object-cover object-center"
-                style={{filter:"drop-shadow(0 2px 12px rgba(0,180,166,0.5))"}} />
-            </div>
+            <BrandLogo size="header" className="flex-shrink-0" />
             <div>
               <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-teal">
                 <span className="h-1.5 w-1.5 rounded-full bg-teal pulse-dot" />{auth.user.rol}
@@ -2268,12 +2945,55 @@ function SupervisorWorkspace({ auth, overview, onLogout, onRefresh, onApproveRev
             ) : null}
           </section>
         </section>
+
+        <section className="mt-6 glass rounded-3xl border border-white/60 p-6 shadow-panel">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h3 className="text-xl font-semibold text-ink">Clientes del sistema</h3>
+              <p className="mt-2 text-sm text-slate-600">El supervisor puede buscar cualquier cliente del sistema sin depender solo de la cartera del collector.</p>
+            </div>
+            <div className="flex w-full max-w-xl gap-3">
+              <input
+                value={systemSearch}
+                onChange={(event) => setSystemSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") onSearchSystemClients(systemSearch);
+                }}
+                className="flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3"
+                placeholder="Buscar por nombre, código o DUI"
+              />
+              <button
+                type="button"
+                onClick={() => onSearchSystemClients(systemSearch)}
+                className="rounded-2xl bg-ink px-4 py-3 font-semibold text-white"
+              >
+                Buscar
+              </button>
+            </div>
+          </div>
+          <div className="mt-4">
+            <DataTable
+              title="Resultado de búsqueda global"
+              rows={(systemClients || []).slice(0, 80)}
+              emptyText="Escribe un criterio y busca clientes del sistema."
+              columns={[
+                { key: "identity_code", label: "Numero Unico" },
+                { key: "nombres", label: "Nombres" },
+                { key: "apellidos", label: "Apellidos" },
+                { key: "dui", label: "DUI" },
+                { key: "segmento", label: "Segmento" },
+                { key: "telefono", label: "Telefono" },
+              ]}
+              compact
+            />
+          </div>
+        </section>
       </div>
     </div>
   );
 }
 
-function AdminWorkspace({ auth, overview, clients, proposal, importProposal, userImportProposal, generatedReport, dailySimulationSummary, onLogout, onCreateStrategy, onAssignWorklist, onAnalyzeDocument, onApplyProposal, onAdjustProposal, onDiscardProposal, onDownloadTemplate, onAnalyzeImport, onApplyImport, onDiscardImport, onDownloadImportTemplate, onAnalyzeUserImport, onApplyUserImport, onDiscardUserImport, onDownloadUserImportTemplate, onGenerateReport, onDownloadGeneratedReport, onRunDailySimulation, onSaveOmnichannelConfig, onSendWhatsAppDemo, saving, error, success }) {
+function AdminWorkspace({ auth, overview, clients, proposal, importProposal, userImportProposal, generatedReport, dailySimulationSummary, dailySimulationPreview, recoveryVintage, recoveryVintageLoading, recoveryVintageCompare, executiveLog, collectorPreviewPortfolio, collectorPreviewId, collectorPreviewLoading, worklistGroupCatalog, selectedUserGroups, selectedUserGroupsUserId, supervisorAssignments, onOpenCollectorPreview, onLoadUserGroups, onAssignGroupToUser, onUnassignGroupFromUser, onAssignCollectorToSupervisor, onUnassignCollectorFromSupervisor, onLoadRecoveryVintage, onLoadRecoveryVintageCompare, onLoadExecutiveLog, onDownloadRecoveryVintage, onDownloadRecoveryExecutiveDashboard, onRunSqlQuery, onAdminAssistantMessage, onPreviewOmnichannel, onLogout, onCreateStrategy, onAssignWorklist, onAnalyzeDocument, onApplyProposal, onAdjustProposal, onDiscardProposal, onDownloadTemplate, onAnalyzeImport, onApplyImport, onDiscardImport, onDownloadImportTemplate, onAnalyzeUserImport, onApplyUserImport, onDiscardUserImport, onDownloadUserImportTemplate, onGenerateReport, onDownloadGeneratedReport, onRunDailySimulation, onPreviewDailySimulation, onSaveOmnichannelConfig, onSendWhatsAppDemo, saving, error, success }) {
   const [strategyForm, setStrategyForm] = useState({ codigo: "", nombre: "", descripcion: "", categoria: "COBRANZA", orden: 0 });
   const [assignForm, setAssignForm] = useState({ user_id: "", strategy_code: "", client_ids: "" });
   const [documentFile, setDocumentFile] = useState(null);
@@ -2281,7 +3001,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
   const [userImportFile, setUserImportFile] = useState(null);
   const [documentNotes, setDocumentNotes] = useState("");
   const [reportPrompt, setReportPrompt] = useState("");
-  const [simulationForm, setSimulationForm] = useState({ fmora1_clients: 250, preventivo_clients: 120 });
+  const [simulationForm, setSimulationForm] = useState({ fmora1_clients: 250, preventivo_clients: 120, recovery_clients: 1000 });
   const [proposalDraft, setProposalDraft] = useState(null);
   const [reportMessage, setReportMessage] = useState("");
   const [omnichannelDraft, setOmnichannelDraft] = useState(null);
@@ -2291,6 +3011,41 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
   const [callbotDemoForm, setCallbotDemoForm] = useState({ to_phone: "", client_id: "", strategy_code: "FMORA1" });
   const [channelDemoResult, setChannelDemoResult] = useState(null);
   const [channelSending, setChannelSending] = useState("");
+  const [selectedPreviewCollectorId, setSelectedPreviewCollectorId] = useState("");
+  const [selectedManagedCollectorId, setSelectedManagedCollectorId] = useState("");
+  const [selectedCatalogGroupKey, setSelectedCatalogGroupKey] = useState("");
+  const [selectedSupervisorId, setSelectedSupervisorId] = useState("");
+  const [selectedSupervisorCollectorId, setSelectedSupervisorCollectorId] = useState("");
+  const [recoveryVintageYear, setRecoveryVintageYear] = useState(String(recoveryVintage?.year || new Date().getFullYear() - 1));
+  const [recoveryCompareYears, setRecoveryCompareYears] = useState(`${new Date().getFullYear() - 1}, ${new Date().getFullYear() - 2}`);
+  const [recoveryVintagePage, setRecoveryVintagePage] = useState(1);
+  const [recoveryVintagePageSize, setRecoveryVintagePageSize] = useState(10);
+  const [assistantPrompt, setAssistantPrompt] = useState("");
+  const [assistantMessages, setAssistantMessages] = useState([]);
+  const [assistantPendingPrompt, setAssistantPendingPrompt] = useState("");
+  const [assistantLoading, setAssistantLoading] = useState(false);
+  const [adminSection, setAdminSection] = useState("assistant");
+  const [sqlQueryText, setSqlQueryText] = useState("select current_database() as base, current_user as usuario");
+  const [sqlQueryMaxRows, setSqlQueryMaxRows] = useState(200);
+  const [sqlQueryResult, setSqlQueryResult] = useState(null);
+  const [sqlQueryLoading, setSqlQueryLoading] = useState(false);
+  const [simulationPreviewLoading, setSimulationPreviewLoading] = useState(false);
+  const [recoveryCompareLoading, setRecoveryCompareLoading] = useState(false);
+  const [executiveLogLoading, setExecutiveLogLoading] = useState(false);
+  const [omnichannelPreview, setOmnichannelPreview] = useState(null);
+  const [omnichannelPreviewLoading, setOmnichannelPreviewLoading] = useState(false);
+  const previewCollectors = useMemo(
+    () => (overview?.collectors || []).map((collector) => collector.user || collector).filter((collector) => collector?.id),
+    [overview]
+  );
+  const availableSupervisors = useMemo(
+    () => {
+      const fromOverview = overview?.supervisors || [];
+      if (fromOverview.length) return fromOverview;
+      return (supervisorAssignments || []).map((item) => item.supervisor).filter((supervisor) => supervisor?.id);
+    },
+    [overview, supervisorAssignments]
+  );
 
   useEffect(() => {
     setProposalDraft(proposal ? JSON.parse(JSON.stringify(proposal)) : null);
@@ -2311,6 +3066,186 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
       strategy_code: current.strategy_code || "FMORA1",
     }));
   }, [overview]);
+
+  useEffect(() => {
+    if (!previewCollectors.length) {
+      setSelectedPreviewCollectorId("");
+      return;
+    }
+    if (collectorPreviewId) {
+      setSelectedPreviewCollectorId(String(collectorPreviewId));
+      return;
+    }
+    setSelectedPreviewCollectorId(String(previewCollectors[0].id));
+  }, [previewCollectors, collectorPreviewId]);
+
+  useEffect(() => {
+    if (!previewCollectors.length) {
+      setSelectedManagedCollectorId("");
+      return;
+    }
+    setSelectedManagedCollectorId((current) => current || String(previewCollectors[0].id));
+  }, [previewCollectors]);
+
+  useEffect(() => {
+    if (!selectedManagedCollectorId) return;
+    if (selectedUserGroupsUserId === Number(selectedManagedCollectorId)) return;
+    onLoadUserGroups(Number(selectedManagedCollectorId));
+  }, [selectedManagedCollectorId, selectedUserGroupsUserId]);
+
+  useEffect(() => {
+    if (!availableSupervisors.length) {
+      setSelectedSupervisorId("");
+      return;
+    }
+    setSelectedSupervisorId((current) => current || String(availableSupervisors[0].id));
+  }, [availableSupervisors]);
+
+  useEffect(() => {
+    if (recoveryVintage?.year) {
+      setRecoveryVintageYear(String(recoveryVintage.year));
+    }
+  }, [recoveryVintage]);
+
+  useEffect(() => {
+    if (!auth?.token || executiveLog?.length) return;
+    void refreshExecutiveLog();
+  }, [auth?.token]);
+
+  useEffect(() => {
+    if (!executiveLog?.length) return;
+    setExecutiveLogLoading(false);
+  }, [executiveLog]);
+
+  useEffect(() => {
+    setRecoveryVintagePage(1);
+  }, [recoveryVintage?.year, recoveryVintage?.sample_clients?.length]);
+
+  const recoveryVintageClients = recoveryVintage?.sample_clients || [];
+  const recoveryVintageTotalPages = Math.max(1, Math.ceil(recoveryVintageClients.length / recoveryVintagePageSize));
+  const recoveryVintageSafePage = Math.min(recoveryVintagePage, recoveryVintageTotalPages);
+  const recoveryVintageStartIndex = (recoveryVintageSafePage - 1) * recoveryVintagePageSize;
+  const recoveryVintageVisibleClients = recoveryVintageClients.slice(recoveryVintageStartIndex, recoveryVintageStartIndex + recoveryVintagePageSize);
+  const recoveryPlacementChartData = useMemo(() => {
+    const placements = recoveryVintage?.placements || [];
+    const maxRecovered = Math.max(...placements.map((item) => Number(item.total_paid_120d || 0)), 1);
+    return placements.map((item) => ({
+      ...item,
+      recoveredAmount: Number(item.total_paid_120d || 0),
+      paymentRate: item.client_count ? (Number(item.paying_clients_120d || 0) / Number(item.client_count || 1)) * 100 : 0,
+      recoveredWidth: `${Math.max(8, (Number(item.total_paid_120d || 0) / maxRecovered) * 100)}%`,
+    }));
+  }, [recoveryVintage]);
+  const recoveryCompareChartData = useMemo(() => {
+    const items = recoveryVintageCompare?.items || [];
+    const maxPayers = Math.max(...items.map((item) => Number(item.active_payers_120d || 0)), 1);
+    return items.map((item) => ({
+      ...item,
+      payerWidth: `${Math.max(8, (Number(item.active_payers_120d || 0) / maxPayers) * 100)}%`,
+      paymentRate: item.total_clients ? (Number(item.active_payers_120d || 0) / Number(item.total_clients || 1)) * 100 : 0,
+    }));
+  }, [recoveryVintageCompare]);
+  const recoveryPlacementLeader = recoveryPlacementChartData.length
+    ? [...recoveryPlacementChartData].sort((left, right) => right.recoveredAmount - left.recoveredAmount)[0]
+    : null;
+  const recoveryPlacementLaggard = recoveryPlacementChartData.length
+    ? [...recoveryPlacementChartData].sort((left, right) => left.recoveredAmount - right.recoveredAmount)[0]
+    : null;
+  const recoveryBestVintage = recoveryCompareChartData.length
+    ? [...recoveryCompareChartData].sort((left, right) => right.paymentRate - left.paymentRate)[0]
+    : null;
+  const recoveryTotalRecovered = recoveryPlacementChartData.reduce((sum, item) => sum + Number(item.recoveredAmount || 0), 0);
+  const recoveryTotalBalance = Number(recoveryVintage?.total_balance || 0);
+  const recoveryTotalDue = Number(recoveryVintage?.total_due || 0);
+  const recoveryPlacementVisualData = useMemo(() => {
+    const items = recoveryPlacementChartData || [];
+    const maxRecovered = Math.max(...items.map((item) => Number(item.recoveredAmount || 0)), 1);
+    const maxBalance = Math.max(...items.map((item) => Number(item.total_balance || 0)), 1);
+    return items.map((item) => ({
+      ...item,
+      recoveredHeight: Math.max(12, (Number(item.recoveredAmount || 0) / maxRecovered) * 190),
+      balanceHeight: Math.max(12, (Number(item.total_balance || 0) / maxBalance) * 190),
+      dueShare: Number(item.total_balance || 0) > 0 ? (Number(item.total_due || 0) / Number(item.total_balance || 1)) * 100 : 0,
+    }));
+  }, [recoveryPlacementChartData]);
+  const recoveryCompareVisualData = useMemo(() => {
+    const items = recoveryCompareChartData || [];
+    if (!items.length) return { points: "", areaPoints: "", maxRate: 1, enriched: [] };
+    const maxRate = Math.max(...items.map((item) => Number(item.paymentRate || 0)), 1);
+    const width = 620;
+    const height = 220;
+    const step = items.length > 1 ? width / (items.length - 1) : width;
+    const enriched = items.map((item, index) => {
+      const x = items.length > 1 ? index * step : width / 2;
+      const y = height - (Number(item.paymentRate || 0) / maxRate) * 180 - 12;
+      return { ...item, x, y };
+    });
+    const points = enriched.map((item) => `${item.x},${item.y}`).join(" ");
+    const areaPoints = `0,${height} ${points} ${width},${height}`;
+    return { points, areaPoints, maxRate, enriched };
+  }, [recoveryCompareChartData]);
+
+  const submitAssistantPrompt = async (prompt, applyChange = false) => {
+    if (!prompt?.trim()) return;
+    setAssistantLoading(true);
+    if (!applyChange) {
+      setAssistantMessages((current) => [...current, { role: "user", text: prompt.trim() }]);
+    }
+    try {
+      const response = await onAdminAssistantMessage(prompt.trim(), applyChange);
+      if (response.action_code === "recovery_vintage") setAdminSection("recovery_vintage");
+      else if (response.action_code === "show_user_groups" || response.action_code === "assign_group" || response.action_code === "unassign_group" || response.action_code === "assign_supervisor" || response.action_code === "unassign_supervisor") setAdminSection("assignments");
+      else if (response.action_code === "toggle_channel") setAdminSection("omnichannel");
+      else if (response.action_code === "daily_simulation") setAdminSection("daily_simulation");
+      else setAdminSection("assistant");
+      setAssistantMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          text: response.response_message,
+          meta: response,
+        },
+      ]);
+      if (response.requires_confirmation && response.can_apply) {
+        setAssistantPendingPrompt(prompt.trim());
+      } else if (response.executed) {
+        setAssistantPendingPrompt("");
+      }
+      if (!applyChange) setAssistantPrompt("");
+    } finally {
+      setAssistantLoading(false);
+    }
+  };
+
+  const executeSqlQuery = async () => {
+    if (!sqlQueryText.trim()) return;
+    setSqlQueryLoading(true);
+    try {
+      const result = await onRunSqlQuery({ query: sqlQueryText, max_rows: Number(sqlQueryMaxRows || 200) });
+      setSqlQueryResult(result);
+    } finally {
+      setSqlQueryLoading(false);
+    }
+  };
+
+  const runRecoveryCompare = async () => {
+    if (!recoveryCompareYears.trim()) return;
+    setRecoveryCompareLoading(true);
+    try {
+      await onLoadRecoveryVintageCompare(recoveryCompareYears);
+    } finally {
+      setRecoveryCompareLoading(false);
+    }
+  };
+
+  const refreshExecutiveLog = async () => {
+    setExecutiveLogLoading(true);
+    try {
+      await onLoadExecutiveLog();
+    } finally {
+      setExecutiveLogLoading(false);
+    }
+  };
 
   const sendChannelDemo = async (channelName, url, payload, successMessageBuilder) => {
     setChannelSending(channelName);
@@ -2342,16 +3277,95 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
     }
   };
 
+  const groupCatalogOptions = useMemo(
+    () => (worklistGroupCatalog || []).map((group) => ({
+      ...group,
+      key: `${group.strategy_code || ""}|${group.placement_code || ""}|${group.group_id || ""}`,
+    })),
+    [worklistGroupCatalog]
+  );
+  const selectedSupervisorAssignment = useMemo(
+    () => (supervisorAssignments || []).find((item) => String(item.supervisor.id) === String(selectedSupervisorId)) || null,
+    [supervisorAssignments, selectedSupervisorId]
+  );
+  const alreadyAssignedCollectorIds = new Set((selectedSupervisorAssignment?.collectors || []).map((collector) => collector.id));
+  const availableCollectorsForSupervisor = previewCollectors.filter((collector) => !alreadyAssignedCollectorIds.has(collector.id));
+  const adminAlerts = useMemo(() => {
+    const alerts = [...(overview?.alerts || [])];
+    if ((overview?.hmr_clients || 0) > 0) {
+      alerts.push({
+        severity: "info",
+        title: "Oportunidades HMR activas",
+        detail: `${overview.hmr_clients} clientes requieren herramientas de mitigación o solución.`,
+        module: "summary",
+      });
+    }
+    if ((overview?.omnichannel?.channels || []).some((channel) => !channel.enabled)) {
+      const pending = overview.omnichannel.channels.filter((channel) => !channel.enabled).map((channel) => channel.name).join(", ");
+      alerts.push({
+        severity: "info",
+        title: "Canales pendientes de activación",
+        detail: `Aún faltan por activar: ${pending}.`,
+        module: "omnichannel",
+      });
+    }
+    return alerts;
+  }, [overview]);
+  const adminMenuItems = [
+    { key: "assistant", label: "Agente Admin", hint: "Pedidos en lenguaje natural" },
+    { key: "summary", label: "Resumen", hint: "KPIs generales" },
+    { key: "recovery_vintage", label: "Cosechas Recovery", hint: "Añadas y placements" },
+    { key: "collector_preview", label: "Vista gestor", hint: "Experiencia del collector" },
+    { key: "omnichannel", label: "Centro omnicanal", hint: "Canales y demos" },
+    { key: "daily_simulation", label: "Simulación diaria", hint: "Envejecimiento y pagos" },
+    { key: "documents", label: "Documentos", hint: "PDFs y propuestas" },
+    { key: "user_import", label: "Usuarios", hint: "Carga y validación" },
+    { key: "reports", label: "Reportes", hint: "Vista gerencial" },
+    { key: "client_import", label: "Cartera", hint: "Carga de clientes" },
+    { key: "strategies", label: "Estrategias", hint: "Crear y asignar" },
+    { key: "assignments", label: "Asignaciones", hint: "Grupos y supervisores" },
+    { key: "sql_query", label: "Consultas SQL", hint: "Extracción segura de datos" },
+  ];
+  const assistantQuickPrompts = [
+    "Ver cosecha recovery 2025",
+    "Que grupos tiene collector1",
+    "Asigna cartera V13A082 al usuario collector1",
+    "Explicame como activar email",
+    "Simula fmora1 300 preventivo 120 recovery 800",
+  ];
+  const runSimulationPreview = async () => {
+    setSimulationPreviewLoading(true);
+    try {
+      await onPreviewDailySimulation(simulationForm);
+    } finally {
+      setSimulationPreviewLoading(false);
+    }
+  };
+
+  const savedPlaybooks = [
+    { title: "Campaña cosecha 2024", detail: "Clientes Recovery con bajo pago reciente y placements V13+.", action: () => { setAdminSection("recovery_vintage"); setRecoveryVintageYear("2024"); } },
+    { title: "Reactivación V11", detail: "Clientes con pago >= USD 10 en 120 días y opción de regreso a placement inicial.", action: () => { setAdminSection("recovery_vintage"); setRecoveryCompareYears(`${new Date().getFullYear() - 1}, ${new Date().getFullYear() - 2}`); } },
+    { title: "Canales caídos", detail: "Revisar readiness omnicanal y previsualizar mensajes antes de activar campañas.", action: () => setAdminSection("omnichannel") },
+  ];
+
+  const previewChannelMessage = async (channel, payload) => {
+    setOmnichannelPreviewLoading(true);
+    try {
+      const preview = await onPreviewOmnichannel({ channel, ...payload });
+      setOmnichannelPreview(preview);
+    } finally {
+      setOmnichannelPreviewLoading(false);
+    }
+  };
+  const showAdminSection = (...sectionKeys) => sectionKeys.includes(adminSection);
+
   return (
-    <div className="min-h-screen px-4 py-5 md:px-8">
-      <div className="mx-auto max-w-7xl">
+    <div className="min-h-screen px-4 py-5 md:px-6 2xl:px-8">
+      <div className="mx-auto max-w-[1760px]">
         <header className="rounded-2xl bg-brand-gradient px-6 py-5 shadow-card-lg md:flex md:items-center md:justify-between relative overflow-hidden">
           <div className="absolute inset-0 opacity-10" style={{background:"radial-gradient(circle at 80% 50%, rgba(0,180,166,0.6) 0%, transparent 60%)"}} />
           <div className="relative flex items-center gap-4">
-            <div className="h-14 w-[152px] flex-shrink-0 overflow-hidden">
-              <img src={brandLogo} alt="360CollectPlus" className="h-full w-full scale-[1.28] object-cover object-center"
-                style={{filter:"drop-shadow(0 2px 12px rgba(0,180,166,0.5))"}} />
-            </div>
+            <BrandLogo size="headerLg" className="flex-shrink-0" />
             <div>
               <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-teal">
                 <span className="h-1.5 w-1.5 rounded-full bg-teal pulse-dot" />
@@ -2366,6 +3380,14 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
               <p className="text-xs text-slate-400">Sesión activa</p>
               <p className="text-sm font-bold text-white">{auth.user.nombre}</p>
             </div>
+            <button
+              type="button"
+              onClick={() => selectedPreviewCollectorId && onOpenCollectorPreview(Number(selectedPreviewCollectorId))}
+              disabled={!selectedPreviewCollectorId || collectorPreviewLoading}
+              className="rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-white/20 disabled:opacity-60"
+            >
+              {collectorPreviewLoading ? "Abriendo..." : "Ver estrategias"}
+            </button>
             <button onClick={onLogout} className="rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-white/20">
               Cerrar sesión
             </button>
@@ -2375,14 +3397,747 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
         {error ? <p className="mt-4 rounded-2xl bg-orange-50 px-4 py-3 text-sm text-orange-700">{error}</p> : null}
         {success ? <p className="mt-4 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{success}</p> : null}
 
-        <section className="mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-6 grid gap-6 xl:grid-cols-[280px_minmax(0,1fr)] 2xl:grid-cols-[300px_minmax(0,1fr)]">
+          <aside className="glass h-fit rounded-3xl border border-white/60 p-4 shadow-panel xl:sticky xl:top-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Menu administrativo</p>
+            <div className="mt-4 space-y-2">
+              {adminMenuItems.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setAdminSection(item.key)}
+                  className={`w-full rounded-2xl border px-4 py-3 text-left transition-all ${
+                    adminSection === item.key
+                      ? "border-ocean/30 bg-cyan-50 shadow-sm"
+                      : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+                  }`}
+                >
+                  <p className={`text-sm font-semibold ${adminSection === item.key ? "text-ocean" : "text-ink"}`}>{item.label}</p>
+                  <p className="mt-1 text-xs text-slate-500">{item.hint}</p>
+                </button>
+              ))}
+            </div>
+          </aside>
+
+          <div className="min-w-0">
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+          <span className="font-semibold text-ink">Módulo activo:</span> {adminMenuItems.find((item) => item.key === adminSection)?.label || "Agente Admin"}
+        </div>
+        <section className={`glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("assistant") ? "" : "hidden"}`}>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h3 className="text-xl font-semibold text-ink">Agente Admin</h3>
+              <p className="mt-2 text-sm text-slate-600">Pídele cambios operativos en lenguaje natural. El agente ahora también puede explicarte el paso a paso antes de proponer o aplicar el cambio.</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+              Ejemplos: `ver cosecha recovery 2025`, `asigna cartera V13A082 al usuario collector1`, `explicame como activar email`, `simula fmora1 300 preventivo 120 recovery 800`
+            </div>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {assistantQuickPrompts.map((prompt) => (
+              <button
+                key={prompt}
+                type="button"
+                onClick={() => setAssistantPrompt(prompt)}
+                className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:border-slate-300 hover:bg-slate-50"
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+          <div className="mt-4 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                submitAssistantPrompt(assistantPrompt, false);
+              }}
+              className="rounded-2xl border border-slate-200 bg-white p-4"
+            >
+              <textarea
+                value={assistantPrompt}
+                onChange={(event) => setAssistantPrompt(event.target.value)}
+                rows={4}
+                placeholder="Escribe lo que quieres hacer en el sistema..."
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
+              />
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button type="submit" disabled={assistantLoading || !assistantPrompt.trim()} className="rounded-2xl bg-ink px-5 py-3 font-semibold text-white disabled:opacity-70">
+                  {assistantLoading ? "Analizando..." : "Analizar solicitud"}
+                </button>
+                {assistantPendingPrompt ? (
+                  <button type="button" onClick={() => submitAssistantPrompt(assistantPendingPrompt, true)} disabled={assistantLoading} className="rounded-2xl bg-teal px-5 py-3 font-semibold text-white disabled:opacity-70">
+                    Confirmar y aplicar
+                  </button>
+                ) : null}
+              </div>
+            </form>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Conversación</p>
+              <div className="mt-3 max-h-72 space-y-3 overflow-y-auto pr-1">
+                {assistantMessages.length ? (
+                  assistantMessages.map((item, index) => (
+                    <div key={`assistant-message-${index}`} className={`rounded-2xl px-4 py-3 text-sm ${item.role === "user" ? "bg-slate-100 text-slate-700" : "bg-cyan-50 text-ink"}`}>
+                      <p className="font-semibold">{item.role === "user" ? "Admin" : "Agente"}</p>
+                      <p className="mt-1">{item.text}</p>
+                      {item.meta?.data?.groups?.length ? (
+                        <p className="mt-2 text-xs text-slate-500">Grupos encontrados: {item.meta.data.groups.map((group) => group.display_name || group.group_id).join(" · ")}</p>
+                      ) : null}
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl bg-slate-50 px-4 py-4 text-sm text-slate-500">Aquí aparecerán las propuestas y resultados del agente administrativo.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className={`mt-6 grid gap-5 md:grid-cols-2 xl:grid-cols-4 ${showAdminSection("summary") ? "" : "hidden"}`}>
           <StatCard title="Clientes totales" value={overview?.total_clients || 0} detail="Base completa disponible" />
           <StatCard title="Clientes asignados" value={overview?.assigned_clients || 0} detail={`${overview?.unassigned_clients || 0} pendientes de asignar`} />
           <StatCard title="Clientes HMR" value={overview?.hmr_clients || 0} detail="Elegibles para mitigacion" />
           <StatCard title="Estrategias activas" value={overview?.strategies?.length || 0} detail="Alineadas al manual de cobranza" />
         </section>
 
-        <section className="mt-6 glass rounded-3xl border border-white/60 p-6 shadow-panel">
+        <section className={`mt-6 glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("summary") ? "" : "hidden"}`}>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h3 className="text-xl font-semibold text-ink">Centro de alertas</h3>
+              <p className="mt-2 text-sm text-slate-600">Señales rápidas para priorizar decisiones sin recorrer todo el panel.</p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700">
+              {adminAlerts.length} alertas visibles
+            </span>
+          </div>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            {adminAlerts.length ? adminAlerts.map((alert, index) => (
+              <button
+                key={`admin-alert-${index}`}
+                type="button"
+                onClick={() => alert.module ? setAdminSection(alert.module) : null}
+                className={`rounded-2xl border p-4 text-left transition-all ${
+                  alert.severity === "warning"
+                    ? "border-amber-200 bg-amber-50 hover:bg-amber-100"
+                    : "border-cyan-200 bg-cyan-50 hover:bg-cyan-100"
+                }`}
+              >
+                <p className="text-sm font-semibold text-ink">{alert.title}</p>
+                <p className="mt-2 text-sm text-slate-700">{alert.detail}</p>
+                {alert.module ? <p className="mt-3 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Ir a {adminMenuItems.find((item) => item.key === alert.module)?.label || "módulo"}</p> : null}
+              </button>
+            )) : (
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
+                No hay alertas críticas en este momento. La operación luce estable.
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className={`mt-6 grid gap-4 xl:grid-cols-[0.95fr_1.05fr] ${showAdminSection("summary") ? "" : "hidden"}`}>
+          <div className="glass rounded-3xl border border-white/60 p-6 shadow-panel">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-semibold text-ink">Playbooks operativos</h3>
+                <p className="mt-2 text-sm text-slate-600">Accesos rápidos a campañas o lecturas operativas recurrentes.</p>
+              </div>
+            </div>
+            <div className="mt-4 space-y-3">
+              {savedPlaybooks.map((playbook) => (
+                <button key={playbook.title} type="button" onClick={playbook.action} className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-left hover:border-slate-300 hover:bg-slate-50">
+                  <p className="font-semibold text-ink">{playbook.title}</p>
+                  <p className="mt-1 text-sm text-slate-600">{playbook.detail}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="glass rounded-3xl border border-white/60 p-6 shadow-panel">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-semibold text-ink">Bitácora ejecutiva</h3>
+                <p className="mt-2 text-sm text-slate-600">Quién cambió qué, cuándo lo hizo y sobre qué módulo impactó.</p>
+              </div>
+              <button type="button" onClick={refreshExecutiveLog} disabled={executiveLogLoading} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-ink disabled:opacity-60">
+                {executiveLogLoading ? "Actualizando..." : "Actualizar"}
+              </button>
+            </div>
+            <div className="mt-4 max-h-[420px] space-y-3 overflow-y-auto pr-1">
+              {(executiveLog || []).length ? executiveLog.map((event) => (
+                <div key={`executive-log-${event.id}`} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-ink">{String(event.accion || "").replaceAll("_", " ")}</p>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{event.created_at ? new Date(event.created_at).toLocaleString("es-SV") : "Sin fecha"}</span>
+                  </div>
+                  <p className="mt-2 text-sm text-slate-700">{event.descripcion || "Sin descripción registrada."}</p>
+                  <p className="mt-2 text-xs uppercase tracking-[0.18em] text-slate-500">{event.usuario_nombre || "Sistema"} · {event.entidad}</p>
+                </div>
+              )) : (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">No hay eventos relevantes todavía.</div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className={`mt-6 overflow-hidden rounded-[34px] border border-cyan-900/60 bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.18),_transparent_25%),radial-gradient(circle_at_top_right,_rgba(59,130,246,0.12),_transparent_18%),linear-gradient(180deg,_#081321_0%,_#0b1828_36%,_#0d1f31_100%)] p-6 shadow-[0_32px_90px_rgba(2,8,23,0.45)] ${showAdminSection("recovery_vintage") ? "" : "hidden"}`}>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-cyan-300/80">Executive Vintage Dashboard</p>
+              <h3 className="mt-3 text-3xl font-semibold text-white">Cosecha Recovery añejada</h3>
+              <p className="mt-2 max-w-3xl text-sm text-slate-300">Analiza la cartera que se separó en un año específico y mira cómo hoy está distribuida entre `V11`, `V12`, `V13`, `V16` y `V18`, incluyendo clientes con pagos de al menos USD 10 en los últimos 120 días.</p>
+            </div>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                onLoadRecoveryVintage(Number(recoveryVintageYear || new Date().getFullYear() - 1));
+              }}
+              className="flex flex-wrap items-center gap-3"
+            >
+              <input
+                type="number"
+                min="2000"
+                max="2100"
+                value={recoveryVintageYear}
+                onChange={(event) => setRecoveryVintageYear(event.target.value)}
+                className="w-32 rounded-2xl border border-cyan-400/20 bg-slate-950/60 px-4 py-3 text-white shadow-inner shadow-cyan-950/30 outline-none placeholder:text-slate-500"
+                placeholder="2000"
+              />
+              <button
+                type="submit"
+                disabled={recoveryVintageLoading || !recoveryVintageYear}
+                className="rounded-2xl bg-gradient-to-r from-cyan-500 to-sky-500 px-5 py-3 font-semibold text-slate-950 shadow-[0_12px_35px_rgba(14,165,233,0.35)] disabled:opacity-70"
+              >
+                {recoveryVintageLoading ? "Cargando..." : "Ver cosecha"}
+              </button>
+              <button
+                type="button"
+                disabled={!recoveryVintageYear || recoveryVintageLoading}
+                onClick={() => onDownloadRecoveryVintage(Number(recoveryVintageYear || new Date().getFullYear() - 1))}
+                className="rounded-2xl border border-slate-700 bg-slate-950/60 px-5 py-3 font-semibold text-slate-100 disabled:opacity-70"
+              >
+                Descargar Excel
+              </button>
+              <button
+                type="button"
+                disabled={!recoveryVintageYear || recoveryVintageLoading}
+                onClick={() => onDownloadRecoveryExecutiveDashboard(Number(recoveryVintageYear || new Date().getFullYear() - 1), recoveryCompareYears)}
+                className="rounded-2xl border border-cyan-400/25 bg-cyan-500/10 px-5 py-3 font-semibold text-cyan-200 disabled:opacity-70"
+              >
+                Descargar dashboard ejecutivo
+              </button>
+            </form>
+          </div>
+
+          <div className="mt-4 grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
+            <div className="relative overflow-hidden rounded-[28px] bg-[radial-gradient(circle_at_top_left,_rgba(45,212,191,0.28),_transparent_35%),linear-gradient(135deg,_#0b1f3a_0%,_#123b57_45%,_#0e7490_100%)] p-6 text-white shadow-[0_30px_80px_rgba(15,23,42,0.24)]">
+              <div className="absolute -right-16 top-0 h-44 w-44 rounded-full bg-white/10 blur-3xl" />
+              <div className="relative flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.28em] text-cyan-100/90">Executive Recovery View</p>
+                  <h4 className="mt-3 text-3xl font-bold">Cosecha {recoveryVintage?.year || recoveryVintageYear}</h4>
+                  <p className="mt-2 max-w-2xl text-sm text-cyan-50/85">
+                    Lectura gerencial de recuperación para identificar dónde se está convirtiendo mejor la cosecha y en qué placement se está frenando el flujo.
+                  </p>
+                </div>
+                  <div className="rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-right backdrop-blur-sm">
+                    <p className="text-xs uppercase tracking-[0.22em] text-cyan-100/80">Recuperado 120d</p>
+                    <p className="mt-2 text-3xl font-bold text-white">{currency(recoveryTotalRecovered)}</p>
+                    <p className="mt-2 text-xs text-cyan-100/75">Suma visible por placement</p>
+                  </div>
+              </div>
+
+              <div className="relative mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                {[
+                  {
+                    title: "Clientes separados",
+                    value: recoveryVintage?.total_clients || 0,
+                    detail: `Cosecha ${recoveryVintage?.year || recoveryVintageYear}`,
+                    tone: "from-cyan-400/20 to-cyan-500/5",
+                  },
+                  {
+                    title: `Con pago USD 10+ / ${recoveryVintage?.lookback_days || 120} días`,
+                    value: recoveryVintage?.active_payers_120d || 0,
+                    detail: "Elegibles para reactivación",
+                    tone: "from-emerald-400/20 to-emerald-500/5",
+                  },
+                  {
+                    title: "Hoy en V11",
+                    value: recoveryVintage?.v11_clients || 0,
+                    detail: "Placement inicial vigente",
+                    tone: "from-amber-400/20 to-amber-500/5",
+                  },
+                  {
+                    title: "Placements activos",
+                    value: recoveryVintage?.placements_tracked || 0,
+                    detail: "Distribución actual",
+                    tone: "from-fuchsia-400/20 to-fuchsia-500/5",
+                  },
+                  {
+                    title: "Saldo total visible",
+                    value: currency(recoveryTotalBalance),
+                    detail: "Balance que representa la cosecha",
+                    tone: "from-sky-400/20 to-sky-500/5",
+                  },
+                  {
+                    title: "Saldo vencido",
+                    value: currency(recoveryTotalDue),
+                    detail: "Monto vencido hoy en la cosecha",
+                    tone: "from-rose-400/20 to-rose-500/5",
+                  },
+                ].map((card) => (
+                  <div key={card.title} className={`rounded-2xl border border-white/12 bg-gradient-to-br ${card.tone} px-4 py-4 backdrop-blur-sm`}>
+                    <p className="text-xs uppercase tracking-[0.2em] text-cyan-100/80">{card.title}</p>
+                    <p className="mt-3 text-3xl font-bold text-white">{card.value}</p>
+                    <p className="mt-2 text-sm text-cyan-50/80">{card.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid gap-4">
+              <div className="rounded-[26px] border border-emerald-400/20 bg-[linear-gradient(180deg,rgba(15,23,42,0.92),rgba(8,47,73,0.82))] p-5 shadow-[0_20px_55px_rgba(16,185,129,0.12)]">
+                <p className="text-xs uppercase tracking-[0.22em] text-emerald-300">Placement líder</p>
+                <p className="mt-3 text-3xl font-bold text-white">{recoveryPlacementLeader?.placement_code || "N/D"}</p>
+                <p className="mt-2 text-sm text-slate-300">{recoveryPlacementLeader ? `${currency(recoveryPlacementLeader.recoveredAmount)} recuperados` : "Sin datos aún."}</p>
+                <p className="mt-1 text-xs text-slate-400">{recoveryPlacementLeader ? `${recoveryPlacementLeader.paymentRate.toFixed(1)}% de clientes con pago reciente · Saldo ${currency(recoveryPlacementLeader.total_balance || 0)}` : ""}</p>
+              </div>
+              <div className="rounded-[26px] border border-amber-400/20 bg-[linear-gradient(180deg,rgba(15,23,42,0.92),rgba(67,20,7,0.82))] p-5 shadow-[0_20px_55px_rgba(245,158,11,0.12)]">
+                <p className="text-xs uppercase tracking-[0.22em] text-amber-300">Placement rezagado</p>
+                <p className="mt-3 text-3xl font-bold text-white">{recoveryPlacementLaggard?.placement_code || "N/D"}</p>
+                <p className="mt-2 text-sm text-slate-300">{recoveryPlacementLaggard ? `${currency(recoveryPlacementLaggard.recoveredAmount)} recuperados` : "Sin datos aún."}</p>
+                <p className="mt-1 text-xs text-slate-400">{recoveryPlacementLaggard ? `${recoveryPlacementLaggard.paymentRate.toFixed(1)}% de clientes con pago reciente · Saldo ${currency(recoveryPlacementLaggard.total_balance || 0)}` : ""}</p>
+              </div>
+              <div className="rounded-[26px] border border-cyan-400/20 bg-[linear-gradient(180deg,rgba(15,23,42,0.92),rgba(14,116,144,0.78))] p-5 shadow-[0_20px_55px_rgba(34,211,238,0.12)]">
+                <p className="text-xs uppercase tracking-[0.22em] text-cyan-300">Mejor añada comparada</p>
+                <p className="mt-3 text-3xl font-bold text-white">{recoveryBestVintage ? `Cosecha ${recoveryBestVintage.year}` : "N/D"}</p>
+                <p className="mt-2 text-sm text-slate-300">{recoveryBestVintage ? `${recoveryBestVintage.paymentRate.toFixed(1)}% de conversión reciente` : "Corre el comparador para verla."}</p>
+                <p className="mt-1 text-xs text-slate-400">{recoveryBestVintage ? `${recoveryBestVintage.active_payers_120d} clientes con pago reciente · Saldo ${currency(recoveryBestVintage.total_balance || 0)}` : ""}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-[28px] border border-cyan-900/60 bg-[linear-gradient(180deg,rgba(10,18,31,0.98),rgba(8,20,34,0.95))] p-5 shadow-[0_24px_70px_rgba(2,8,23,0.4)]">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-cyan-300/75">Gráfica de recuperación por placement</p>
+                  <p className="mt-1 text-sm text-slate-300">Lectura visual del balance representado, recuperación visible y presión de saldo vencido por placement.</p>
+                </div>
+                <span className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1 text-xs font-semibold text-cyan-200">Base: {recoveryVintage?.year || recoveryVintageYear}</span>
+              </div>
+              <div className="mt-5 grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+                <div className="rounded-[26px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-white">Saldo y recuperación por placement</p>
+                      <p className="mt-1 text-xs text-slate-400">Barras dobles: balance visible vs recuperado.</p>
+                    </div>
+                    <div className="flex items-center gap-4 text-[11px] text-slate-400">
+                      <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-slate-500" /> Balance</span>
+                      <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-cyan-400" /> Recuperado</span>
+                    </div>
+                  </div>
+                  {recoveryPlacementVisualData.length ? (
+                    <div className="mt-6">
+                      <div className="flex h-[260px] items-end gap-4 overflow-x-auto rounded-[22px] border border-white/5 bg-slate-950/35 px-4 pb-4 pt-6">
+                        {recoveryPlacementVisualData.map((item) => (
+                          <div key={`placement-visual-${item.placement_code}`} className="flex min-w-[96px] flex-1 flex-col items-center gap-3">
+                            <div className="flex h-[200px] items-end gap-2">
+                              <div className="flex w-6 items-end rounded-full bg-slate-800/90">
+                                <div className="w-full rounded-full bg-gradient-to-t from-slate-500 to-slate-300 shadow-[0_0_18px_rgba(148,163,184,0.16)]" style={{ height: `${item.balanceHeight}px` }} />
+                              </div>
+                              <div className="flex w-6 items-end rounded-full bg-cyan-950/80">
+                                <div className="w-full rounded-full bg-gradient-to-t from-cyan-500 via-sky-400 to-emerald-300 shadow-[0_0_22px_rgba(34,211,238,0.35)]" style={{ height: `${item.recoveredHeight}px` }} />
+                              </div>
+                            </div>
+                            <div className="text-center">
+                              <p className="text-sm font-semibold text-white">{item.placement_code}</p>
+                              <p className="mt-1 text-[11px] text-slate-400">{currency(item.recoveredAmount)}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-6 rounded-2xl border border-dashed border-slate-700 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
+                      No hay placements con recuperación para graficar en la cosecha seleccionada.
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-4">
+                  {recoveryPlacementVisualData.slice(0, 3).map((item) => (
+                    <div key={`placement-insight-${item.placement_code}`} className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.22em] text-cyan-300/75">{item.placement_code}</p>
+                          <p className="mt-2 text-2xl font-bold text-white">{currency(item.total_balance || 0)}</p>
+                          <p className="mt-1 text-xs text-slate-400">Balance visible</p>
+                        </div>
+                        <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-200">
+                          {item.paymentRate.toFixed(1)}%
+                        </div>
+                      </div>
+                      <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-800">
+                        <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-400" style={{ width: `${Math.max(8, Math.min(100, item.dueShare))}%` }} />
+                      </div>
+                      <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
+                        <span>Saldo vencido {currency(item.total_due || 0)}</span>
+                        <span>{item.client_count} clientes</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-[28px] border border-cyan-900/60 bg-[linear-gradient(180deg,rgba(10,18,31,0.98),rgba(30,13,46,0.95))] p-5 shadow-[0_24px_70px_rgba(2,8,23,0.4)]">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-fuchsia-300/75">Comparativo gráfico por añada</p>
+                  <p className="mt-1 text-sm text-slate-300">Curva de recuperación reciente y huella de saldo para comparar cosechas con mirada ejecutiva.</p>
+                </div>
+              </div>
+              <div className="mt-5">
+                {recoveryCompareVisualData.enriched.length ? (
+                  <div className="rounded-[26px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))] p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-white">Tendencia de conversión por añada</p>
+                        <p className="mt-1 text-xs text-slate-400">La línea muestra % de pago reciente y las tarjetas resumen el peso financiero de cada cosecha.</p>
+                      </div>
+                      <div className="rounded-full border border-fuchsia-400/20 bg-fuchsia-500/10 px-3 py-1 text-xs font-semibold text-fuchsia-200">
+                        {recoveryCompareVisualData.enriched.length} cosechas comparadas
+                      </div>
+                    </div>
+                    <div className="mt-5 overflow-hidden rounded-[24px] border border-white/5 bg-slate-950/35 p-4">
+                      <svg viewBox="0 0 620 220" className="h-[240px] w-full">
+                        <defs>
+                          <linearGradient id="recoveryCompareArea" x1="0" x2="0" y1="0" y2="1">
+                            <stop offset="0%" stopColor="#c026d3" stopOpacity="0.38" />
+                            <stop offset="100%" stopColor="#0f172a" stopOpacity="0.02" />
+                          </linearGradient>
+                          <linearGradient id="recoveryCompareStroke" x1="0" x2="1" y1="0" y2="0">
+                            <stop offset="0%" stopColor="#22d3ee" />
+                            <stop offset="50%" stopColor="#818cf8" />
+                            <stop offset="100%" stopColor="#f472b6" />
+                          </linearGradient>
+                        </defs>
+                        {[0, 1, 2, 3].map((tick) => (
+                          <line key={`grid-${tick}`} x1="0" x2="620" y1={20 + tick * 48} y2={20 + tick * 48} stroke="rgba(148,163,184,0.14)" strokeWidth="1" />
+                        ))}
+                        <polygon points={recoveryCompareVisualData.areaPoints} fill="url(#recoveryCompareArea)" />
+                        <polyline points={recoveryCompareVisualData.points} fill="none" stroke="url(#recoveryCompareStroke)" strokeWidth="4" strokeLinejoin="round" strokeLinecap="round" />
+                        {recoveryCompareVisualData.enriched.map((item) => (
+                          <g key={`compare-point-${item.year}`}>
+                            <circle cx={item.x} cy={item.y} r="6" fill="#0f172a" stroke="#67e8f9" strokeWidth="3" />
+                            <text x={item.x} y="214" textAnchor="middle" fill="#cbd5e1" fontSize="12">{item.year}</text>
+                          </g>
+                        ))}
+                      </svg>
+                    </div>
+                    <div className="mt-4 grid gap-3 md:grid-cols-3">
+                      {recoveryCompareVisualData.enriched.map((item) => (
+                        <div key={`compare-card-${item.year}`} className="rounded-2xl border border-white/8 bg-white/5 px-4 py-4">
+                          <p className="text-xs uppercase tracking-[0.22em] text-fuchsia-300/75">Cosecha {item.year}</p>
+                          <p className="mt-2 text-2xl font-bold text-white">{item.paymentRate.toFixed(1)}%</p>
+                          <p className="mt-1 text-xs text-slate-400">{item.active_payers_120d} clientes con pago reciente</p>
+                          <div className="mt-3 space-y-1 text-xs text-slate-400">
+                            <p>Saldo total {currency(item.total_balance || 0)}</p>
+                            <p>Saldo vencido {currency(item.total_due || 0)}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-950/50 px-4 py-4 text-sm text-slate-400">
+                    Ejecuta el comparador para visualizar varias cosechas en una sola gráfica.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-[28px] border border-cyan-900/60 bg-[linear-gradient(180deg,rgba(10,18,31,0.96),rgba(11,27,45,0.92))] p-4 shadow-[0_20px_55px_rgba(2,8,23,0.32)]">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-cyan-300/75">Comparador de cosechas</p>
+                <p className="mt-1 text-sm text-slate-300">Compara varias añadas al mismo tiempo por volumen, pago reciente y distribución por placement.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <input
+                  value={recoveryCompareYears}
+                  onChange={(event) => setRecoveryCompareYears(event.target.value)}
+                  className="w-64 rounded-2xl border border-cyan-400/20 bg-slate-950/60 px-4 py-3 text-white"
+                  placeholder="2025, 2024, 2023"
+                />
+                <button type="button" onClick={runRecoveryCompare} disabled={recoveryCompareLoading} className="rounded-2xl border border-cyan-400/25 bg-cyan-500/10 px-4 py-3 font-semibold text-cyan-200 disabled:opacity-70">
+                  {recoveryCompareLoading ? "Comparando..." : "Comparar"}
+                </button>
+              </div>
+            </div>
+            {(recoveryVintageCompare?.items || []).length ? (
+              <div className="mt-4 overflow-x-auto rounded-2xl border border-white/5 bg-slate-950/40">
+                <table className="min-w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-white/10 text-slate-400">
+                      <th className="px-3 py-2 font-medium">Año</th>
+                      <th className="px-3 py-2 font-medium">Clientes</th>
+                      <th className="px-3 py-2 font-medium">Pago reciente</th>
+                      <th className="px-3 py-2 font-medium">Placements</th>
+                      <th className="px-3 py-2 font-medium">Distribución</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recoveryVintageCompare.items.map((item) => (
+                      <tr key={`compare-${item.year}`} className="border-b border-white/5 align-top">
+                        <td className="px-3 py-3 font-semibold text-white">{item.year}</td>
+                        <td className="px-3 py-3 text-slate-300">{item.total_clients}</td>
+                        <td className="px-3 py-3 text-slate-300">{item.active_payers_120d}</td>
+                        <td className="px-3 py-3 text-slate-300">{item.placements_tracked}</td>
+                        <td className="px-3 py-3 text-slate-300">
+                          <div className="flex flex-wrap gap-2">
+                            {Object.entries(item.placement_distribution || {}).map(([placement, count]) => (
+                              <span key={`${item.year}-${placement}`} className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-200">
+                                {placement}: {count}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.18fr)]">
+            <div className="min-w-0 rounded-[28px] border border-cyan-900/60 bg-[linear-gradient(180deg,rgba(10,18,31,0.96),rgba(11,27,45,0.92))] p-4 shadow-[0_20px_55px_rgba(2,8,23,0.32)]">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-cyan-300/75">Distribución por placement</p>
+                  <p className="mt-1 text-sm text-slate-300">Cómo se ha movido la cosecha seleccionada dentro de Recovery.</p>
+                </div>
+                <span className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1 text-xs font-semibold text-cyan-200">Umbral USD {Number(recoveryVintage?.payment_threshold || 10).toFixed(2)}</span>
+              </div>
+              <div className="mt-4 space-y-3">
+                {(recoveryVintage?.placements || []).length ? (
+                  recoveryVintage.placements.map((placement) => (
+                    <div key={`recovery-vintage-${placement.placement_code}`} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 backdrop-blur-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-lg font-bold text-white">{placement.placement_code}</p>
+                          <p className="mt-1 text-sm text-slate-300">{placement.client_count} clientes actualmente en este placement.</p>
+                        </div>
+                        <span className="rounded-full border border-white/10 bg-slate-950/50 px-3 py-1 text-sm font-semibold text-cyan-200">{currency(placement.total_paid_120d)}</span>
+                      </div>
+                      <div className="mt-3 grid gap-2 md:grid-cols-3">
+                        <div className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2">
+                          <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Con pago reciente</p>
+                          <p className="mt-1 font-semibold text-white">{placement.paying_clients_120d}</p>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2">
+                          <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Elegibles V11</p>
+                          <p className="mt-1 font-semibold text-white">{placement.v11_eligible_clients}</p>
+                        </div>
+                        <div className="rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2">
+                          <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Pago acumulado</p>
+                          <p className="mt-1 font-semibold text-white">{currency(placement.total_paid_120d)}</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 grid gap-2 md:grid-cols-2">
+                        <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-3">
+                          <p className="text-xs uppercase tracking-[0.18em] text-emerald-300">Agencia/lista con mejor desempeño</p>
+                          <p className="mt-1 font-semibold text-white">{placement.best_group_id || "N/D"}</p>
+                          <p className="mt-1 text-sm text-slate-300">{Number(placement.best_group_rate_120d || 0).toFixed(1)}% con pago reciente</p>
+                        </div>
+                        <div className="rounded-xl border border-amber-400/20 bg-amber-500/10 px-3 py-3">
+                          <p className="text-xs uppercase tracking-[0.18em] text-amber-300">Agencia/lista rezagada</p>
+                          <p className="mt-1 font-semibold text-white">{placement.lagging_group_id || "N/D"}</p>
+                          <p className="mt-1 text-sm text-slate-300">{Number(placement.lagging_group_rate_120d || 0).toFixed(1)}% con pago reciente</p>
+                        </div>
+                      </div>
+                      {(placement.agencies || []).length ? (
+                        <div className="mt-3 overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/40">
+                          <table className="min-w-full text-left text-xs">
+                            <thead>
+                              <tr className="border-b border-white/10 text-slate-400">
+                                <th className="px-3 py-2 font-medium">Agencia / Lista</th>
+                                <th className="px-3 py-2 font-medium">Scope</th>
+                                <th className="px-3 py-2 font-medium">Clientes</th>
+                                <th className="px-3 py-2 font-medium">Con pago</th>
+                                <th className="px-3 py-2 font-medium">% pago</th>
+                                <th className="px-3 py-2 font-medium">Pago acumulado</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {placement.agencies.map((agency) => (
+                                <tr key={`${placement.placement_code}-${agency.group_id}`} className="border-b border-white/5 last:border-b-0">
+                                  <td className="px-3 py-2 font-semibold text-white">{agency.group_id}</td>
+                                  <td className="px-3 py-2 text-slate-300">{agency.channel_scope || "N/D"}</td>
+                                  <td className="px-3 py-2 text-slate-300">{agency.client_count}</td>
+                                  <td className="px-3 py-2 text-slate-300">{agency.paying_clients_120d}</td>
+                                  <td className="px-3 py-2 text-slate-300">{Number(agency.payment_rate_120d || 0).toFixed(1)}%</td>
+                                  <td className="px-3 py-2 text-slate-300">{currency(agency.total_paid_120d)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))
+                ) : (
+                  <p className="rounded-2xl bg-slate-950/40 px-4 py-4 text-sm text-slate-400">No hay clientes Recovery con fecha de separación para el año seleccionado.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="min-w-0 rounded-[28px] border border-cyan-900/60 bg-[linear-gradient(180deg,rgba(10,18,31,0.96),rgba(11,27,45,0.92))] p-4 shadow-[0_20px_55px_rgba(2,8,23,0.32)]">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-cyan-300/75">Muestra ejecutiva de clientes</p>
+                  <p className="mt-1 text-sm text-slate-300">Detalle rápido para explicar movimiento, placement actual y pagos recientes de la cosecha.</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-slate-400">
+                    Mostrando {recoveryVintageClients.length ? recoveryVintageStartIndex + 1 : 0}-{Math.min(recoveryVintageStartIndex + recoveryVintagePageSize, recoveryVintageClients.length)} de {recoveryVintageClients.length}
+                  </span>
+                  <select
+                    value={recoveryVintagePageSize}
+                    onChange={(event) => setRecoveryVintagePageSize(Number(event.target.value))}
+                    className="rounded-xl border border-cyan-400/20 bg-slate-950/60 px-3 py-2 text-sm text-slate-100"
+                  >
+                    <option value={10}>10 por hoja</option>
+                    <option value={20}>20 por hoja</option>
+                  </select>
+                </div>
+              </div>
+              <div className="mt-4 max-w-full overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/40">
+                <table className="min-w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-white/10 text-slate-400">
+                      <th className="px-3 py-2 font-medium">Número Único</th>
+                      <th className="px-3 py-2 font-medium">Cliente</th>
+                      <th className="px-3 py-2 font-medium">Separación</th>
+                      <th className="px-3 py-2 font-medium">Placement actual</th>
+                      <th className="px-3 py-2 font-medium">Pago 120d</th>
+                      <th className="px-3 py-2 font-medium">Ruta</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recoveryVintageVisibleClients.length ? (
+                      recoveryVintageVisibleClients.map((client) => (
+                        <tr key={`recovery-vintage-client-${client.client_id}`} className="border-b border-white/5 align-top">
+                          <td className="px-3 py-3 font-semibold text-white">{client.identity_code}</td>
+                          <td className="px-3 py-3 text-slate-300">
+                            <p>{client.client_name}</p>
+                            <p className="mt-1 text-xs text-slate-400">{client.current_group_id || "Sin cartera"} · {client.current_status || "Sin estado"}</p>
+                          </td>
+                          <td className="px-3 py-3 text-slate-300">{client.separation_date}</td>
+                          <td className="px-3 py-3 text-slate-300">{client.current_placement || "SIN_PLACEMENT"}</td>
+                          <td className="px-3 py-3 text-slate-300">
+                            <p>{currency(client.total_paid_120d)}</p>
+                            <p className="mt-1 text-xs text-slate-400">{client.qualifying_payment_count_120d} pagos calificados</p>
+                          </td>
+                          <td className="px-3 py-3 text-slate-300">
+                            <p>{client.movement_path}</p>
+                            <p className="mt-1 text-xs text-slate-400">{client.qualifies_for_v11 ? "Con pago reciente >= umbral" : "Sin pago reciente >= umbral"}</p>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan="6" className="px-3 py-6 text-center text-sm text-slate-400">No hay muestra disponible para esta cosecha.</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              {recoveryVintageClients.length ? (
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-xs text-slate-400">Hoja {recoveryVintageSafePage} de {recoveryVintageTotalPages}</p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setRecoveryVintagePage((current) => Math.max(1, current - 1))}
+                      disabled={recoveryVintageSafePage <= 1}
+                      className="rounded-xl border border-cyan-400/20 bg-slate-950/60 px-3 py-2 text-sm font-semibold text-slate-100 disabled:opacity-50"
+                    >
+                      Anterior
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRecoveryVintagePage((current) => Math.min(recoveryVintageTotalPages, current + 1))}
+                      disabled={recoveryVintageSafePage >= recoveryVintageTotalPages}
+                      className="rounded-xl border border-cyan-400/20 bg-slate-950/60 px-3 py-2 text-sm font-semibold text-slate-100 disabled:opacity-50"
+                    >
+                      Siguiente
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </section>
+
+        <section className={`mt-6 glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("collector_preview") ? "" : "hidden"}`}>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h3 className="text-xl font-semibold text-ink">Vista principal del gestor</h3>
+              <p className="mt-2 text-sm text-slate-600">Como administrador puedes abrir el panel operativo del collector y revisar exactamente la experiencia principal de gestión.</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-right">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Collector visible</p>
+              <p className="mt-1 text-sm font-bold text-ink">{collectorPreviewPortfolio?.collector?.nombre || "Selecciona un collector"}</p>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 xl:grid-cols-[1fr_auto]">
+            <select
+              value={selectedPreviewCollectorId}
+              onChange={(event) => setSelectedPreviewCollectorId(event.target.value)}
+              className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3"
+            >
+              {previewCollectors.map((collector) => (
+                <option key={collector.id} value={collector.id}>
+                  {collector.nombre} · {collector.username}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => selectedPreviewCollectorId && onOpenCollectorPreview(Number(selectedPreviewCollectorId))}
+              disabled={!selectedPreviewCollectorId || collectorPreviewLoading}
+              className="rounded-2xl bg-ink px-5 py-3 font-semibold text-white disabled:opacity-70"
+            >
+              {collectorPreviewLoading ? "Abriendo panel..." : "Abrir panel del gestor"}
+            </button>
+          </div>
+          {collectorPreviewPortfolio ? (
+            <div className="mt-4 grid gap-3 md:grid-cols-4">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Asignados hoy</p>
+                <p className="mt-2 text-2xl font-bold text-ink">{collectorPreviewPortfolio.metrics?.assigned_today || 0}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Recovery visible</p>
+                <p className="mt-2 text-2xl font-bold text-ink">{collectorPreviewPortfolio.metrics?.strategy_summary?.VAGENCIASEXTERNASINTERNO || 0}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Preventivo visible</p>
+                <p className="mt-2 text-2xl font-bold text-ink">{collectorPreviewPortfolio.metrics?.strategy_summary?.PREVENTIVO || 0}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Subgrupos Recovery</p>
+                <p className="mt-2 text-2xl font-bold text-ink">
+                  {new Set((collectorPreviewPortfolio.clients || []).filter((item) => item.estrategia_principal === "VAGENCIASEXTERNASINTERNO").map((item) => `${item.placement_code || "SIN"}-${item.group_id || item.sublista_trabajo || "GENERAL"}`)).size}
+                </p>
+              </div>
+            </div>
+          ) : null}
+        </section>
+
+        <section className={`mt-6 glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("omnichannel") ? "" : "hidden"}`}>
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <h3 className="text-xl font-semibold text-ink">Centro omnicanal</h3>
@@ -2507,6 +4262,23 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                       <span className="font-bold">{channelDemoResult.ch}: </span>{String(channelDemoResult.msg)}
                     </div>
                   ) : null}
+                  {omnichannelPreview ? (
+                    <div className="rounded-2xl border border-cyan-100 bg-cyan-50/70 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs font-bold uppercase tracking-[0.18em] text-cyan-700">Preview omnicanal</p>
+                        <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700">{String(omnichannelPreview.channel || "").toUpperCase()}</span>
+                      </div>
+                      <p className="mt-2 text-sm text-slate-700">{omnichannelPreview.client_name || "Cliente"} · {omnichannelPreview.identity_code || "Sin número único"} · {omnichannelPreview.strategy_code}</p>
+                      {omnichannelPreview.account_reference ? <p className="mt-1 text-xs text-slate-500">Cuenta: {omnichannelPreview.account_reference}</p> : null}
+                      {omnichannelPreview.subject ? <p className="mt-3 text-sm font-semibold text-ink">Asunto: {omnichannelPreview.subject}</p> : null}
+                      {omnichannelPreview.message ? <p className="mt-3 whitespace-pre-wrap rounded-xl bg-white px-3 py-3 text-sm text-slate-700">{omnichannelPreview.message}</p> : null}
+                      {omnichannelPreview.html ? (
+                        <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white">
+                          <iframe title="preview-email" srcDoc={omnichannelPreview.html} className="h-72 w-full" />
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => onSaveOmnichannelConfig(omnichannelDraft)}
@@ -2541,7 +4313,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                         >
                           <option value="">Sin cliente específico</option>
                           {(clients || []).slice(0, 50).map((client) => (
-                            <option key={client.id} value={client.id}>{client.codigo_cliente} · {client.nombres} {client.apellidos}</option>
+                            <option key={client.id} value={client.id}>{formatOmnichannelClientOption(client)}</option>
                           ))}
                         </select>
                       </div>
@@ -2552,6 +4324,14 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                         className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3"
                         placeholder="Mensaje opcional. Si lo dejas vacío, el sistema arma uno según la estrategia."
                       />
+                      <button
+                        type="button"
+                        onClick={() => previewChannelMessage("whatsapp", { ...whatsAppDemoForm, client_id: whatsAppDemoForm.client_id ? Number(whatsAppDemoForm.client_id) : null })}
+                        disabled={omnichannelPreviewLoading}
+                        className="w-full rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-semibold text-ink disabled:opacity-50"
+                      >
+                        {omnichannelPreviewLoading ? "Generando preview..." : "Previsualizar WhatsApp"}
+                      </button>
                       <button
                         type="button"
                         onClick={() => onSendWhatsAppDemo({ ...whatsAppDemoForm, client_id: whatsAppDemoForm.client_id ? Number(whatsAppDemoForm.client_id) : null })}
@@ -2575,7 +4355,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                         <select value={emailDemoForm.strategy_code}
                           onChange={e => setEmailDemoForm(f => ({...f, strategy_code: e.target.value}))}
                           className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm">
-                          {["AL_DIA","PREVENTIVO","FMORA1","MMORA2","HMORA3","AMORA4","BMORA5","CMORA6","DMORA7"].map(s => (
+                          {["PREVENTIVO","FMORA1","MMORA2","HMORA3","AMORA4","BMORA5","CMORA6","DMORA7"].map(s => (
                             <option key={s} value={s}>{s}</option>
                           ))}
                         </select>
@@ -2584,7 +4364,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                           className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm">
                           <option value="">Sin cliente</option>
                           {(clients || []).slice(0, 30).map(c => (
-                            <option key={c.id} value={c.id}>{c.codigo_cliente} · {c.nombres}</option>
+                            <option key={c.id} value={c.id}>{formatOmnichannelClientOption(c)}</option>
                           ))}
                         </select>
                       </div>
@@ -2593,6 +4373,11 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                           onChange={e => setEmailDemoForm(f => ({...f, use_smtp: e.target.checked}))} className="h-3.5 w-3.5" />
                         Usar SMTP (Gmail/Outlook) en vez de Resend
                       </label>
+                      <button type="button" disabled={omnichannelPreviewLoading || !emailDemoForm.to_email}
+                        onClick={() => previewChannelMessage("email", { ...emailDemoForm, client_id: emailDemoForm.client_id ? Number(emailDemoForm.client_id) : null })}
+                        className="w-full rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-semibold text-ink disabled:opacity-50">
+                        {omnichannelPreviewLoading ? "Generando preview..." : "Previsualizar email"}
+                      </button>
                       <button type="button" disabled={saving || !emailDemoForm.to_email}
                         onClick={() => sendChannelDemo(
                           "Email",
@@ -2618,7 +4403,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                         <select value={smsDemoForm.strategy_code}
                           onChange={e => setSmsDemoForm(f => ({...f, strategy_code: e.target.value}))}
                           className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm">
-                          {["AL_DIA","PREVENTIVO","FMORA1","MMORA2","HMORA3"].map(s => (
+                          {["PREVENTIVO","FMORA1","MMORA2","HMORA3"].map(s => (
                             <option key={s} value={s}>{s}</option>
                           ))}
                         </select>
@@ -2627,7 +4412,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                           className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm">
                           <option value="">Cliente automatico por estrategia</option>
                           {(clients || []).slice(0, 30).map(c => (
-                            <option key={c.id} value={c.id}>{c.codigo_cliente} · {c.nombres}</option>
+                            <option key={c.id} value={c.id}>{formatOmnichannelClientOption(c)}</option>
                           ))}
                         </select>
                       </div>
@@ -2639,6 +4424,11 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                           <option value="twilio">Twilio SMS</option>
                         </select>
                       </div>
+                      <button type="button" disabled={omnichannelPreviewLoading || !smsDemoForm.to_phone}
+                        onClick={() => previewChannelMessage("sms", { ...smsDemoForm, client_id: smsDemoForm.client_id ? Number(smsDemoForm.client_id) : null })}
+                        className="w-full rounded-xl border border-slate-200 bg-white py-2.5 text-sm font-semibold text-ink disabled:opacity-50">
+                        {omnichannelPreviewLoading ? "Generando preview..." : "Previsualizar SMS"}
+                      </button>
                       <button type="button" disabled={saving || channelSending === "SMS" || !smsDemoForm.to_phone}
                         onClick={() => sendChannelDemo(
                           "SMS",
@@ -2668,7 +4458,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                         <select value={callbotDemoForm.strategy_code}
                           onChange={e => setCallbotDemoForm(f => ({...f, strategy_code: e.target.value}))}
                           className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm">
-                          {["FMORA1","MMORA2","HMORA3","AMORA4","BMORA5"].map(s => (
+                          {["FMORA1","MMORA2","HMORA3","AMORA4","BMORA5","VAGENCIASEXTERNASINTERNO"].map(s => (
                             <option key={s} value={s}>{s}</option>
                           ))}
                         </select>
@@ -2697,11 +4487,11 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
           </div>
         </section>
 
-        <section className="mt-6 glass rounded-3xl border border-white/60 p-6 shadow-panel">
+        <section className={`mt-6 glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("daily_simulation") ? "" : "hidden"}`}>
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <h3 className="text-xl font-semibold text-ink">Simular día operativo</h3>
-              <p className="mt-2 text-sm text-slate-600">Avanza un día de mora para la cartera vencida y agrega clientes nuevos para `FMORA1` y `PREVENTIVO`.</p>
+              <p className="mt-2 text-sm text-slate-600">Avanza un día de mora, simula pagos para mover clientes entre estrategias o al día, agrega cartera nueva para `FMORA1`, `PREVENTIVO` y `Recovery`, y rota placements desde `V11` en adelante.</p>
             </div>
             <button
               type="button"
@@ -2711,8 +4501,16 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
             >
               {saving ? "Procesando..." : "Simular dia operativo"}
             </button>
+            <button
+              type="button"
+              onClick={runSimulationPreview}
+              disabled={simulationPreviewLoading}
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-3 font-semibold text-ink disabled:opacity-70"
+            >
+              {simulationPreviewLoading ? "Calculando..." : "Previsualizar simulación"}
+            </button>
           </div>
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
             <input
               type="number"
               min="0"
@@ -2731,24 +4529,63 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
               className="rounded-2xl border border-slate-200 bg-white px-4 py-3"
               placeholder="Clientes nuevos PREVENTIVO"
             />
+            <input
+              type="number"
+              min="0"
+              max="5000"
+              value={simulationForm.recovery_clients}
+              onChange={(event) => setSimulationForm((current) => ({ ...current, recovery_clients: Number(event.target.value || 0) }))}
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-3"
+              placeholder="Clientes nuevos Recovery"
+            />
           </div>
+          {dailySimulationPreview ? (
+            <div className="mt-4 rounded-2xl border border-cyan-200 bg-cyan-50 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-700">Previsualización segura</p>
+                  <p className="mt-1 text-sm text-slate-700">{dailySimulationPreview.message}</p>
+                </div>
+                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${dailySimulationPreview.already_applied_today ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>
+                  {dailySimulationPreview.already_applied_today ? "Ya aplicada hoy" : "No modifica la base"}
+                </span>
+              </div>
+              <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-2xl border border-cyan-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Envejecerían</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationPreview.aged_accounts}</p></div>
+                <div className="rounded-2xl border border-cyan-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Pagos estimados</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationPreview.simulated_payments}</p></div>
+                <div className="rounded-2xl border border-cyan-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Cuentas que podrían curarse</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationPreview.fully_cured_accounts}</p></div>
+                <div className="rounded-2xl border border-cyan-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Rotaciones Recovery</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationPreview.recovery_rotations}</p></div>
+              </div>
+              {(dailySimulationPreview.warnings || []).length ? (
+                <div className="mt-4 space-y-2">
+                  {(dailySimulationPreview.warnings || []).map((warning, index) => (
+                    <p key={`simulation-warning-${index}`} className="rounded-2xl bg-white px-4 py-3 text-sm text-amber-800">• {warning}</p>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {dailySimulationSummary ? (
-            <div className="mt-4 grid gap-4 md:grid-cols-4">
+            <div className="mt-4 grid gap-4 md:grid-cols-4 xl:grid-cols-8">
               <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Cuentas con mora +1</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationSummary.aged_accounts}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Nuevos FMORA1</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationSummary.inserted_fmora1_clients}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Nuevos PREVENTIVO</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationSummary.inserted_preventivo_clients}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Nuevos Recovery</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationSummary.inserted_recovery_clients}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Pagos simulados</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationSummary.simulated_payments}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Cuentas al día</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationSummary.fully_cured_accounts}</p></div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Rotaciones Recovery</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationSummary.recovery_rotations}</p></div>
               <div className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs uppercase tracking-[0.2em] text-slate-500">Total clientes</p><p className="mt-2 text-2xl font-bold text-ink">{dailySimulationSummary.total_clients}</p></div>
             </div>
           ) : null}
         </section>
 
-        <section className="mt-6 grid gap-6 xl:grid-cols-2">
+        <section className={`mt-6 grid gap-6 xl:grid-cols-2 ${showAdminSection("documents", "user_import", "reports", "client_import", "strategies", "sql_query") ? "" : "hidden"}`}>
           <form
             onSubmit={(event) => {
               event.preventDefault();
               onAnalyzeDocument(documentFile, documentNotes);
             }}
-            className="glass rounded-3xl border border-white/60 p-6 shadow-panel"
+            className={`glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("documents") ? "" : "hidden"}`}
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -2766,7 +4603,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
             </div>
           </form>
 
-          <section className="glass rounded-3xl border border-white/60 p-6 shadow-panel">
+          <section className={`glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("documents") ? "" : "hidden"}`}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-xl font-semibold text-ink">Propuesta de ajustes</h3>
@@ -2856,7 +4693,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
               event.preventDefault();
               onAnalyzeUserImport(userImportFile);
             }}
-            className="glass rounded-3xl border border-white/60 p-6 shadow-panel"
+            className={`glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("user_import") ? "" : "hidden"}`}
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -2875,7 +4712,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
             </div>
           </form>
 
-          <section className="glass rounded-3xl border border-white/60 p-6 shadow-panel">
+          <section className={`glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("user_import") ? "" : "hidden"}`}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-xl font-semibold text-ink">Previsualización de usuarios</h3>
@@ -2926,7 +4763,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
             )}
           </section>
 
-          <section className="glass rounded-3xl border border-white/60 p-6 shadow-panel xl:col-span-2">
+          <section className={`glass rounded-3xl border border-white/60 p-6 shadow-panel xl:col-span-2 ${showAdminSection("reports") ? "" : "hidden"}`}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-xl font-semibold text-ink">Generador de reportes gerenciales</h3>
@@ -2993,7 +4830,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
               event.preventDefault();
               onAnalyzeImport(importFile);
             }}
-            className="glass rounded-3xl border border-white/60 p-6 shadow-panel"
+            className={`glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("client_import") ? "" : "hidden"}`}
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -3012,7 +4849,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
             </div>
           </form>
 
-          <section className="glass rounded-3xl border border-white/60 p-6 shadow-panel">
+          <section className={`glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("client_import") ? "" : "hidden"}`}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-xl font-semibold text-ink">Previsualización de carga</h3>
@@ -3067,7 +4904,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                       </thead>
                       <tbody>
                         {(importProposal.preview_rows || []).map((row, index) => (
-                          <tr key={`${row.codigo_cliente}-${row.numero_cuenta}-${index}`} className="border-b border-slate-100">
+                          <tr key={`${row.identity_code}-${row.numero_cuenta}-${index}`} className="border-b border-slate-100">
                             <td className="px-3 py-3 text-slate-700">{row.cliente}</td>
                             <td className="px-3 py-3 text-slate-700">{row.numero_cuenta}</td>
                             <td className="px-3 py-3 text-slate-700">{row.tipo_producto}</td>
@@ -3090,12 +4927,88 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
             )}
           </section>
 
+          <section className={`glass rounded-3xl border border-white/60 p-6 shadow-panel xl:col-span-2 ${showAdminSection("sql_query") ? "" : "hidden"}`}>
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-semibold text-ink">Consultas SQL seguras</h3>
+                <p className="mt-2 text-sm text-slate-600">Solo para administradores. Este módulo usa una conexión de solo lectura, timeout corto y límite de filas para no afectar el trabajo operativo de usuarios conectados.</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+                Permitido: <code className="font-mono">SELECT</code>, <code className="font-mono">WITH</code>, <code className="font-mono">EXPLAIN</code>
+              </div>
+            </div>
+            <div className="mt-4 grid gap-4">
+              <textarea
+                value={sqlQueryText}
+                onChange={(event) => setSqlQueryText(event.target.value)}
+                rows={8}
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-sm"
+                placeholder="select identity_code, nombres, apellidos from clientes limit 50"
+              />
+              <div className="flex flex-wrap items-center gap-3">
+                <input
+                  type="number"
+                  min="1"
+                  max="1000"
+                  value={sqlQueryMaxRows}
+                  onChange={(event) => setSqlQueryMaxRows(Number(event.target.value || 200))}
+                  className="w-36 rounded-2xl border border-slate-200 bg-white px-4 py-3"
+                  placeholder="Máx filas"
+                />
+                <button
+                  type="button"
+                  onClick={executeSqlQuery}
+                  disabled={sqlQueryLoading || !sqlQueryText.trim()}
+                  className="rounded-2xl bg-ink px-5 py-3 font-semibold text-white disabled:opacity-70"
+                >
+                  {sqlQueryLoading ? "Ejecutando..." : "Ejecutar consulta"}
+                </button>
+              </div>
+              {sqlQueryResult ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm text-slate-600">
+                      <span className="font-semibold text-ink">{sqlQueryResult.row_count}</span> filas
+                      {sqlQueryResult.truncated ? <span> · resultado truncado</span> : null}
+                      <span> · {sqlQueryResult.duration_ms} ms</span>
+                    </div>
+                    <code className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">{sqlQueryResult.normalized_query}</code>
+                  </div>
+                  <div className="mt-4 overflow-x-auto">
+                    <table className="min-w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-slate-500">
+                          {(sqlQueryResult.columns || []).map((column) => (
+                            <th key={column} className="px-3 py-2 font-medium">{column}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(sqlQueryResult.rows || []).map((row, index) => (
+                          <tr key={`sql-row-${index}`} className="border-b border-slate-100">
+                            {(sqlQueryResult.columns || []).map((column) => (
+                              <td key={`${index}-${column}`} className="px-3 py-2 text-slate-700">{row[column] == null ? "" : String(row[column])}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
+                  Aquí aparecerá el resultado de la consulta. Úsalo para extraer data sin entrar manualmente a pgAdmin.
+                </div>
+              )}
+            </div>
+          </section>
+
           <form
             onSubmit={(event) => {
               event.preventDefault();
               onCreateStrategy(strategyForm, () => setStrategyForm({ codigo: "", nombre: "", descripcion: "", categoria: "COBRANZA", orden: 0 }));
             }}
-            className="glass rounded-3xl border border-white/60 p-6 shadow-panel"
+            className={`glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("strategies") ? "" : "hidden"}`}
           >
             <h3 className="text-xl font-semibold text-ink">Crear nueva estrategia</h3>
             <div className="mt-4 grid gap-4">
@@ -3125,7 +5038,7 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
                 .filter((item) => Number.isFinite(item) && item > 0);
               onAssignWorklist({ ...assignForm, user_id: Number(assignForm.user_id), client_ids: ids });
             }}
-            className="glass rounded-3xl border border-white/60 p-6 shadow-panel"
+            className={`glass rounded-3xl border border-white/60 p-6 shadow-panel ${showAdminSection("strategies") ? "" : "hidden"}`}
           >
             <h3 className="text-xl font-semibold text-ink">Asignar lista de trabajo</h3>
             <div className="mt-4 grid gap-4">
@@ -3143,7 +5056,184 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
           </form>
         </section>
 
-        <section className="mt-6 grid gap-6 xl:grid-cols-[1fr_1.15fr]">
+        <section className={`mt-6 grid gap-6 xl:grid-cols-2 ${showAdminSection("assignments") ? "" : "hidden"}`}>
+          <section className="glass rounded-3xl border border-white/60 p-6 shadow-panel">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-semibold text-ink">Grupos asignados por usuario</h3>
+                <p className="mt-2 text-sm text-slate-600">Consulta carteras exactas como `V13A082`, asigna nuevas listas completas y desasigna las que ya no corresponden.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => selectedManagedCollectorId && onLoadUserGroups(Number(selectedManagedCollectorId))}
+                className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-ink"
+              >
+                Recargar grupos
+              </button>
+            </div>
+            <div className="mt-4 grid gap-4">
+              <select
+                value={selectedManagedCollectorId}
+                onChange={(event) => setSelectedManagedCollectorId(event.target.value)}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3"
+              >
+                <option value="">Selecciona collector</option>
+                {previewCollectors.map((collector) => (
+                  <option key={collector.id} value={collector.id}>
+                    {collector.nombre} · {collector.username}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={selectedCatalogGroupKey}
+                onChange={(event) => setSelectedCatalogGroupKey(event.target.value)}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3"
+              >
+                <option value="">Selecciona cartera/grupo para asignar</option>
+                {groupCatalogOptions.map((group) => (
+                  <option key={group.key} value={group.key}>
+                    {group.display_name} · {group.client_count} clientes
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => {
+                  const selectedGroup = groupCatalogOptions.find((group) => group.key === selectedCatalogGroupKey);
+                  if (!selectedManagedCollectorId || !selectedGroup) return;
+                  onAssignGroupToUser({
+                    user_id: Number(selectedManagedCollectorId),
+                    group_id: selectedGroup.group_id,
+                    strategy_code: selectedGroup.strategy_code,
+                    placement_code: selectedGroup.placement_code,
+                    reassign_existing: true,
+                  });
+                }}
+                disabled={!selectedManagedCollectorId || !selectedCatalogGroupKey || saving}
+                className="rounded-2xl bg-ink px-4 py-3 font-semibold text-white disabled:opacity-70"
+              >
+                {saving ? "Procesando..." : "Asignar grupo completo"}
+              </button>
+            </div>
+            <div className="mt-5 space-y-3">
+              {(selectedUserGroups || []).length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
+                  Este usuario aún no tiene grupos activos cargados o falta seleccionar un collector.
+                </div>
+              ) : (
+                (selectedUserGroups || []).map((group) => (
+                  <div key={`${group.strategy_code}-${group.placement_code}-${group.group_id}`} className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-ink">{group.display_name}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Estrategia: {group.strategy_code || "N/D"} · Placement: {group.placement_code || "N/D"} · Scope: {group.channel_scope || "N/D"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-ocean">{group.client_count} clientes</span>
+                        <button
+                          type="button"
+                          onClick={() => onUnassignGroupFromUser({
+                            user_id: Number(selectedManagedCollectorId),
+                            group_id: group.group_id,
+                            strategy_code: group.strategy_code,
+                            placement_code: group.placement_code,
+                          })}
+                          className="rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700"
+                        >
+                          Desasignar
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+
+          <section className="glass rounded-3xl border border-white/60 p-6 shadow-panel">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-semibold text-ink">Collectors por supervisor</h3>
+                <p className="mt-2 text-sm text-slate-600">Asigna o retira collectors de cada supervisor para controlar exactamente qué equipo ve en su panel.</p>
+              </div>
+            </div>
+            <div className="mt-4 grid gap-4">
+              <select
+                value={selectedSupervisorId}
+                onChange={(event) => setSelectedSupervisorId(event.target.value)}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3"
+              >
+                <option value="">Selecciona supervisor</option>
+                {availableSupervisors.map((supervisor) => (
+                  <option key={supervisor.id} value={supervisor.id}>
+                    {supervisor.nombre} · {supervisor.username}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={selectedSupervisorCollectorId}
+                onChange={(event) => setSelectedSupervisorCollectorId(event.target.value)}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3"
+              >
+                <option value="">Selecciona collector para asignar</option>
+                {availableCollectorsForSupervisor.map((collector) => (
+                  <option key={collector.id} value={collector.id}>
+                    {collector.nombre} · {collector.username}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => selectedSupervisorId && selectedSupervisorCollectorId && onAssignCollectorToSupervisor({
+                  supervisor_id: Number(selectedSupervisorId),
+                  collector_id: Number(selectedSupervisorCollectorId),
+                })}
+                disabled={!selectedSupervisorId || !selectedSupervisorCollectorId || saving}
+                className="rounded-2xl bg-ink px-4 py-3 font-semibold text-white disabled:opacity-70"
+              >
+                {saving ? "Procesando..." : "Asignar collector al supervisor"}
+              </button>
+            </div>
+            <div className="mt-5 space-y-3">
+              {!selectedSupervisorAssignment ? (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
+                  Selecciona un supervisor para ver su equipo actual.
+                </div>
+              ) : (
+                <>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <p className="text-sm font-semibold text-ink">{selectedSupervisorAssignment.supervisor.nombre}</p>
+                    <p className="mt-1 text-xs text-slate-500">Equipo visible: {(selectedSupervisorAssignment.collectors || []).length} collectors</p>
+                  </div>
+                  {(selectedSupervisorAssignment.collectors || []).map((collector) => (
+                    <div key={`supervisor-collector-${collector.id}`} className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-ink">{collector.nombre}</p>
+                          <p className="mt-1 text-xs text-slate-500">{collector.username}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onUnassignCollectorFromSupervisor({
+                            supervisor_id: Number(selectedSupervisorId),
+                            collector_id: collector.id,
+                          })}
+                          className="rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700"
+                        >
+                          Desasignar
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          </section>
+        </section>
+
+        <section className={`mt-6 ${showAdminSection("strategies") ? "" : "hidden"}`}>
           <DataTable
             title="Catalogo de estrategias"
             rows={overview?.strategies || []}
@@ -3155,19 +5245,9 @@ function AdminWorkspace({ auth, overview, clients, proposal, importProposal, use
               { key: "orden", label: "Orden" }
             ]}
           />
-          <DataTable
-            title="Clientes de referencia para asignacion"
-            rows={(clients || []).slice(0, 30)}
-            emptyText="No hay clientes disponibles."
-            columns={[
-              { key: "id", label: "ID" },
-              { key: "codigo_cliente", label: "Codigo" },
-              { key: "nombres", label: "Nombres" },
-              { key: "apellidos", label: "Apellidos" },
-              { key: "segmento", label: "Segmento" }
-            ]}
-          />
         </section>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -3196,10 +5276,7 @@ function GenericWorkspace({ auth, users, clients, accounts, payments, prediction
         <header className="rounded-2xl bg-brand-gradient px-6 py-5 shadow-card-lg md:flex md:items-center md:justify-between relative overflow-hidden">
           <div className="absolute inset-0 opacity-10" style={{background:"radial-gradient(circle at 80% 50%, rgba(0,180,166,0.6) 0%, transparent 60%)"}} />
           <div className="relative flex items-center gap-4">
-            <div className="h-12 w-[130px] flex-shrink-0 overflow-hidden">
-              <img src={brandLogo} alt="360CollectPlus" className="h-full w-full scale-[1.28] object-cover object-center"
-                style={{filter:"drop-shadow(0 2px 12px rgba(0,180,166,0.5))"}} />
-            </div>
+            <BrandLogo size="header" className="flex-shrink-0" />
             <div>
               <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-teal">
                 <span className="h-1.5 w-1.5 rounded-full bg-teal pulse-dot" />{auth.user.rol}
@@ -3213,6 +5290,27 @@ function GenericWorkspace({ auth, users, clients, accounts, payments, prediction
               <p className="text-xs text-slate-400">Sesión activa</p>
               <p className="text-sm font-bold text-white">{auth.user.nombre}</p>
             </div>
+            <div className="hidden items-center gap-2 lg:flex">
+              <select
+                value={selectedCollectorId}
+                onChange={(event) => setSelectedCollectorId(event.target.value)}
+                className="rounded-xl border border-white/15 bg-white/10 px-3 py-2.5 text-sm font-semibold text-white"
+              >
+                {supervisedCollectors.map((collector) => (
+                  <option key={collector.id} value={collector.id} className="text-ink">
+                    {collector.nombre}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => selectedCollectorId && onOpenCollectorPreview(Number(selectedCollectorId))}
+                disabled={!selectedCollectorId || collectorPreviewLoading}
+                className="rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-white/20 disabled:opacity-60"
+              >
+                {collectorPreviewLoading ? "Abriendo..." : "Ver estrategias"}
+              </button>
+            </div>
             <button onClick={onLogout} className="rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:bg-white/20">Cerrar sesión</button>
           </div>
         </header>
@@ -3223,7 +5321,7 @@ function GenericWorkspace({ auth, users, clients, accounts, payments, prediction
 
         <section className="mt-6 grid gap-3">
           {sections.includes("Usuarios") ? <DataTable title="Usuarios" rows={users} emptyText="No hay usuarios disponibles." columns={[{ key: "id", label: "#" }, { key: "nombre", label: "Nombre" }, { key: "username", label: "Usuario" }, { key: "rol", label: "Rol" }]} /> : null}
-          {sections.includes("Clientes") ? <DataTable title="Clientes" rows={clients} emptyText="No hay clientes cargados." columns={[{ key: "codigo_cliente", label: "Codigo" }, { key: "nombres", label: "Nombres" }, { key: "apellidos", label: "Apellidos" }, { key: "segmento", label: "Segmento" }, { key: "telefono", label: "Telefono" }]} /> : null}
+          {sections.includes("Clientes") ? <DataTable title="Clientes" rows={clients} emptyText="No hay clientes cargados." columns={[{ key: "identity_code", label: "Numero Unico" }, { key: "nombres", label: "Nombres" }, { key: "apellidos", label: "Apellidos" }, { key: "segmento", label: "Segmento" }, { key: "telefono", label: "Telefono" }]} /> : null}
           {sections.includes("Cuentas") ? <DataTable title="Cuentas" rows={accounts} emptyText="No hay cuentas visibles." columns={[{ key: "numero_cuenta", label: "Cuenta" }, { key: "tipo_producto", label: "Producto" }, { key: "bucket_actual", label: "Bucket" }, { key: "saldo_total", label: "Saldo", render: (value) => currency(value) }, { key: "dias_mora", label: "Dias Mora" }]} /> : null}
           {sections.includes("Pagos") ? <DataTable title="Pagos" rows={payments} emptyText="No hay pagos registrados." columns={[{ key: "cuenta_id", label: "Cuenta ID" }, { key: "monto", label: "Monto", render: (value) => currency(value) }, { key: "canal", label: "Canal" }, { key: "fecha_pago", label: "Fecha", render: (value) => new Date(value).toLocaleString("es-SV") }]} /> : null}
           {sections.includes("IA") ? (
@@ -3271,7 +5369,24 @@ export default function App() {
   const [adminUserImportProposal, setAdminUserImportProposal] = useState(null);
   const [adminGeneratedReport, setAdminGeneratedReport] = useState(null);
   const [adminDailySimulationSummary, setAdminDailySimulationSummary] = useState(null);
+  const [adminDailySimulationPreview, setAdminDailySimulationPreview] = useState(null);
+  const [adminRecoveryVintage, setAdminRecoveryVintage] = useState(null);
+  const [adminRecoveryVintageCompare, setAdminRecoveryVintageCompare] = useState(null);
+  const [adminExecutiveLog, setAdminExecutiveLog] = useState([]);
+  const [adminRecoveryVintageLoading, setAdminRecoveryVintageLoading] = useState(false);
+  const [adminWorklistGroupCatalog, setAdminWorklistGroupCatalog] = useState([]);
+  const [adminSelectedUserGroups, setAdminSelectedUserGroups] = useState([]);
+  const [adminSelectedUserGroupsUserId, setAdminSelectedUserGroupsUserId] = useState(null);
+  const [adminSupervisorAssignments, setAdminSupervisorAssignments] = useState([]);
   const [supervisorOverview, setSupervisorOverview] = useState(null);
+  const [adminCollectorPreviewPortfolio, setAdminCollectorPreviewPortfolio] = useState(null);
+  const [adminCollectorPreviewId, setAdminCollectorPreviewId] = useState(null);
+  const [adminCollectorPreviewOpen, setAdminCollectorPreviewOpen] = useState(false);
+  const [adminCollectorPreviewLoading, setAdminCollectorPreviewLoading] = useState(false);
+  const [supervisorCollectorPreviewPortfolio, setSupervisorCollectorPreviewPortfolio] = useState(null);
+  const [supervisorCollectorPreviewId, setSupervisorCollectorPreviewId] = useState(null);
+  const [supervisorCollectorPreviewOpen, setSupervisorCollectorPreviewOpen] = useState(false);
+  const [supervisorCollectorPreviewLoading, setSupervisorCollectorPreviewLoading] = useState(false);
 
   const normalizeErrorMessage = (raw) => {
     if (!raw) return "No se pudo completar la solicitud.";
@@ -3327,6 +5442,21 @@ export default function App() {
         setAdminUserImportProposal(null);
         setAdminGeneratedReport(null);
         setAdminDailySimulationSummary(null);
+        setAdminDailySimulationPreview(null);
+        setAdminRecoveryVintage(null);
+        setAdminRecoveryVintageCompare(null);
+        setAdminExecutiveLog([]);
+        setAdminRecoveryVintageLoading(false);
+        setAdminWorklistGroupCatalog([]);
+        setAdminSelectedUserGroups([]);
+        setAdminSelectedUserGroupsUserId(null);
+        setAdminSupervisorAssignments([]);
+        setAdminCollectorPreviewPortfolio(null);
+        setAdminCollectorPreviewId(null);
+        setAdminCollectorPreviewOpen(false);
+        setSupervisorCollectorPreviewPortfolio(null);
+        setSupervisorCollectorPreviewId(null);
+        setSupervisorCollectorPreviewOpen(false);
         setUsers([]);
         setClients([]);
         setAccounts([]);
@@ -3337,12 +5467,29 @@ export default function App() {
       if (role === "Supervisor") {
         const overview = await apiFetch("/supervisor/overview/me", token);
         setSupervisorOverview(overview);
+        setClients([]);
         setPortfolio(null);
         setAdminOverview(null);
         setAdminProposal(null);
         setAdminImportProposal(null);
         setAdminUserImportProposal(null);
         setAdminGeneratedReport(null);
+        setAdminDailySimulationSummary(null);
+        setAdminDailySimulationPreview(null);
+        setAdminRecoveryVintage(null);
+        setAdminRecoveryVintageCompare(null);
+        setAdminExecutiveLog([]);
+        setAdminRecoveryVintageLoading(false);
+        setAdminWorklistGroupCatalog([]);
+        setAdminSelectedUserGroups([]);
+        setAdminSelectedUserGroupsUserId(null);
+        setAdminSupervisorAssignments([]);
+        setAdminCollectorPreviewPortfolio(null);
+        setAdminCollectorPreviewId(null);
+        setAdminCollectorPreviewOpen(false);
+        setSupervisorCollectorPreviewPortfolio(null);
+        setSupervisorCollectorPreviewId(null);
+        setSupervisorCollectorPreviewOpen(false);
         setUsers([]);
         setClients([]);
         setAccounts([]);
@@ -3355,6 +5502,11 @@ export default function App() {
       setSupervisorOverview(null);
       if (role === "Admin") {
         requests.push(apiFetch("/admin/overview", token).then(setAdminOverview));
+        requests.push(apiFetch(`/admin/recovery-vintage?year=${new Date().getFullYear() - 1}&sample_limit=20000`, token).then(setAdminRecoveryVintage));
+        requests.push(apiFetch(`/admin/recovery-vintage/compare?years=${new Date().getFullYear() - 1},${new Date().getFullYear() - 2}`, token).then(setAdminRecoveryVintageCompare));
+        requests.push(apiFetch("/admin/executive-log?limit=80", token).then(setAdminExecutiveLog));
+        requests.push(apiFetch("/admin/worklists/groups/catalog", token).then(setAdminWorklistGroupCatalog));
+        requests.push(apiFetch("/admin/supervisor-assignments", token).then(setAdminSupervisorAssignments));
       } else {
         setAdminOverview(null);
         setAdminProposal(null);
@@ -3362,6 +5514,21 @@ export default function App() {
         setAdminUserImportProposal(null);
         setAdminGeneratedReport(null);
         setAdminDailySimulationSummary(null);
+        setAdminDailySimulationPreview(null);
+        setAdminRecoveryVintage(null);
+        setAdminRecoveryVintageCompare(null);
+        setAdminExecutiveLog([]);
+        setAdminRecoveryVintageLoading(false);
+        setAdminWorklistGroupCatalog([]);
+        setAdminSelectedUserGroups([]);
+        setAdminSelectedUserGroupsUserId(null);
+        setAdminSupervisorAssignments([]);
+        setAdminCollectorPreviewPortfolio(null);
+        setAdminCollectorPreviewId(null);
+        setAdminCollectorPreviewOpen(false);
+        setSupervisorCollectorPreviewPortfolio(null);
+        setSupervisorCollectorPreviewId(null);
+        setSupervisorCollectorPreviewOpen(false);
       }
       if (["Admin", "GestorUsuarios", "Auditor"].includes(role)) {
         requests.push(apiFetch("/users", token).then(setUsers));
@@ -3427,7 +5594,22 @@ export default function App() {
     setAdminUserImportProposal(null);
     setAdminGeneratedReport(null);
     setAdminDailySimulationSummary(null);
+    setAdminDailySimulationPreview(null);
+    setAdminRecoveryVintage(null);
+    setAdminRecoveryVintageCompare(null);
+    setAdminExecutiveLog([]);
+    setAdminRecoveryVintageLoading(false);
+    setAdminWorklistGroupCatalog([]);
+    setAdminSelectedUserGroups([]);
+    setAdminSelectedUserGroupsUserId(null);
+    setAdminSupervisorAssignments([]);
     setSupervisorOverview(null);
+    setAdminCollectorPreviewPortfolio(null);
+    setAdminCollectorPreviewId(null);
+    setAdminCollectorPreviewOpen(false);
+    setSupervisorCollectorPreviewPortfolio(null);
+    setSupervisorCollectorPreviewId(null);
+    setSupervisorCollectorPreviewOpen(false);
     setPrediction(null);
     setError("");
     setSuccess("");
@@ -3442,9 +5624,275 @@ export default function App() {
     }
   };
 
+  const searchSystemClients = async (search) => {
+    if (!auth) return;
+    setError("");
+    try {
+      const query = search ? `?search=${encodeURIComponent(search)}` : "";
+      const data = await apiFetch(`/clients${query}`, auth.token);
+      setClients(data);
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+
+  const lookupClientForWorkspace = async (search, mode) => {
+    if (!auth || !search?.trim()) return null;
+    try {
+      const query = `?search=${encodeURIComponent(search.trim())}&mode=${encodeURIComponent(mode || "all")}`;
+      return await apiFetch(`/collector/client-lookup${query}`, auth.token);
+    } catch (requestError) {
+      setError(requestError.message);
+      return null;
+    }
+  };
+
   const refreshCurrentRole = async () => {
     if (!auth) return;
     await loadData(auth.token, auth.user.rol);
+  };
+
+  const openAdminCollectorPreview = async (collectorId) => {
+    if (!auth || !collectorId) return;
+    setAdminCollectorPreviewLoading(true);
+    setError("");
+    try {
+      const preview = await apiFetch(`/admin/collector-portfolio/${collectorId}`, auth.token);
+      setAdminCollectorPreviewPortfolio(preview);
+      setAdminCollectorPreviewId(collectorId);
+      setAdminCollectorPreviewOpen(true);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setAdminCollectorPreviewLoading(false);
+    }
+  };
+
+  const openSupervisorCollectorPreview = async (collectorId) => {
+    if (!auth || !collectorId) return;
+    setSupervisorCollectorPreviewLoading(true);
+    setError("");
+    try {
+      const preview = await apiFetch(`/supervisor/collector-portfolio/${collectorId}`, auth.token);
+      setSupervisorCollectorPreviewPortfolio(preview);
+      setSupervisorCollectorPreviewId(collectorId);
+      setSupervisorCollectorPreviewOpen(true);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setSupervisorCollectorPreviewLoading(false);
+    }
+  };
+
+  const loadAdminUserGroups = async (userId) => {
+    if (!auth || !userId) return;
+    try {
+      const groups = await apiFetch(`/admin/worklists/users/${userId}/groups`, auth.token);
+      setAdminSelectedUserGroups(groups);
+      setAdminSelectedUserGroupsUserId(userId);
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+
+  const loadAdminRecoveryVintage = async (year) => {
+    if (!auth) return;
+    setAdminRecoveryVintageLoading(true);
+    setError("");
+    try {
+      const selectedYear = Number(year || new Date().getFullYear() - 1);
+      const data = await apiFetch(`/admin/recovery-vintage?year=${selectedYear}&sample_limit=20000`, auth.token);
+      setAdminRecoveryVintage(data);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setAdminRecoveryVintageLoading(false);
+    }
+  };
+
+  const loadAdminRecoveryVintageCompare = async (years) => {
+    if (!auth) return;
+    setError("");
+    const data = await apiFetch(`/admin/recovery-vintage/compare?years=${encodeURIComponent(years)}`, auth.token);
+    setAdminRecoveryVintageCompare(data);
+    return data;
+  };
+
+  const loadAdminExecutiveLog = async () => {
+    if (!auth) return;
+    const data = await apiFetch("/admin/executive-log?limit=80", auth.token);
+    setAdminExecutiveLog(data);
+    return data;
+  };
+
+  const downloadAdminRecoveryVintage = async (year) => {
+    if (!auth) return;
+    setError("");
+    try {
+      const selectedYear = Number(year || new Date().getFullYear() - 1);
+      const response = await fetch(`${API_URL}/admin/recovery-vintage/export?year=${selectedYear}`, {
+        headers: { Authorization: `Bearer ${auth.token}` },
+      });
+      if (!response.ok) {
+        const isJson = response.headers.get("content-type")?.includes("application/json");
+        const data = isJson ? await response.json() : await response.text();
+        throw new Error(normalizeErrorMessage(data));
+      }
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = `recovery_cosecha_${selectedYear}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+
+  const downloadAdminRecoveryExecutiveDashboard = async (year, compareYears) => {
+    if (!auth) return;
+    setError("");
+    try {
+      const selectedYear = Number(year || new Date().getFullYear() - 1);
+      const response = await fetch(
+        `${API_URL}/admin/recovery-vintage/executive-export?year=${selectedYear}&compare_years=${encodeURIComponent(compareYears || "")}`,
+        {
+          headers: { Authorization: `Bearer ${auth.token}` },
+        }
+      );
+      if (!response.ok) {
+        const isJson = response.headers.get("content-type")?.includes("application/json");
+        const data = isJson ? await response.json() : await response.text();
+        throw new Error(normalizeErrorMessage(data));
+      }
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = `dashboard_recovery_cosecha_${selectedYear}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(downloadUrl);
+      setSuccess("Dashboard ejecutivo descargado correctamente.");
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  };
+
+  const sendAdminAssistantMessage = async (message, applyChange = false) => {
+    if (!auth) return null;
+    const response = await apiFetch("/admin/assistant/chat", auth.token, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, apply_change: applyChange }),
+    });
+    if (response?.data?.recovery_vintage) {
+      setAdminRecoveryVintage(response.data.recovery_vintage);
+    }
+    if (response?.executed && !response?.data?.recovery_vintage) {
+      await loadData(auth.token, auth.user.rol);
+    }
+    return response;
+  };
+
+  const runAdminSqlQuery = async (payload) => {
+    if (!auth) return null;
+    setError("");
+    setSuccess("");
+    try {
+      const response = await apiFetch("/admin/sql/query", auth.token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setSuccess(`Consulta SQL ejecutada en ${response.duration_ms} ms.`);
+      return response;
+    } catch (requestError) {
+      setError(requestError.message);
+      throw requestError;
+    }
+  };
+
+  const assignAdminGroup = async (payload) => {
+    setSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      const response = await apiFetch("/admin/worklists/groups/assign", auth.token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setSuccess(response.message || "Cartera asignada correctamente.");
+      await loadData(auth.token, auth.user.rol);
+      await loadAdminUserGroups(payload.user_id);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const unassignAdminGroup = async (payload) => {
+    setSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      const response = await apiFetch("/admin/worklists/groups/unassign", auth.token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setSuccess(response.message || "Cartera desasignada correctamente.");
+      await loadData(auth.token, auth.user.rol);
+      await loadAdminUserGroups(payload.user_id);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const assignCollectorToSupervisor = async (payload) => {
+    setSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      const response = await apiFetch("/admin/supervisor-assignments", auth.token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setSuccess(response.message || "Collector asignado al supervisor.");
+      await loadData(auth.token, auth.user.rol);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const unassignCollectorFromSupervisor = async (payload) => {
+    setSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      const response = await apiFetch("/admin/supervisor-assignments/remove", auth.token, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setSuccess(response.message || "Collector desasignado del supervisor.");
+      await loadData(auth.token, auth.user.rol);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const submitManagement = async (client, form, account, onDone) => {
@@ -3497,7 +5945,11 @@ export default function App() {
     }
   };
 
-  const updateDemographics = async (client, form) => {
+  const loadClientDemographics = async (client) => {
+    return apiFetch(`/collector/clients/${client.id}/demographics`, auth.token);
+  };
+
+  const updateDemographics = async (client, form, refreshOverride = null, onDone = null) => {
     setSaving(true);
     setError("");
     setSuccess("");
@@ -3508,7 +5960,9 @@ export default function App() {
         body: JSON.stringify(form)
       });
       setSuccess("Datos demograficos actualizados.");
-      await refreshCurrentRole();
+      if (onDone) onDone();
+      if (refreshOverride) await refreshOverride();
+      else await refreshCurrentRole();
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -3887,6 +6341,29 @@ export default function App() {
     }
   };
 
+  const previewAdminDailySimulation = async (payload) => {
+    setError("");
+    setSuccess("");
+    const preview = await apiFetch("/admin/simulations/daily-rollover/preview", auth.token, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    setAdminDailySimulationPreview(preview);
+    setSuccess(preview.message);
+    return preview;
+  };
+
+  const previewAdminOmnichannel = async (payload) => {
+    setError("");
+    const preview = await apiFetch("/admin/omnichannel/preview", auth.token, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return preview;
+  };
+
   const saveAdminOmnichannelConfig = async (payload) => {
     setSaving(true);
     setError("");
@@ -3977,7 +6454,9 @@ export default function App() {
         onLogout={handleLogout}
         onRefresh={refreshCurrentRole}
         onSubmitManagement={submitManagement}
+        onLoadDemographics={loadClientDemographics}
         onUpdateDemographics={updateDemographics}
+        onLookupClient={lookupClientForWorkspace}
         saving={saving}
         error={error}
         success={success}
@@ -3986,16 +6465,57 @@ export default function App() {
   }
 
   if (auth.user.rol === "Supervisor") {
+    if (supervisorCollectorPreviewOpen && supervisorCollectorPreviewPortfolio) {
+      return (
+        <CollectorWorkspace
+          auth={auth}
+          portfolio={supervisorCollectorPreviewPortfolio}
+          onLogout={() => setSupervisorCollectorPreviewOpen(false)}
+          onRefresh={() => openSupervisorCollectorPreview(supervisorCollectorPreviewId)}
+          onSubmitManagement={submitManagement}
+          onLoadDemographics={loadClientDemographics}
+          onUpdateDemographics={updateDemographics}
+          onLookupClient={lookupClientForWorkspace}
+          saving={saving}
+          error={error}
+          success={success}
+          exitLabel="Volver a supervisor"
+        />
+      );
+    }
     return (
       <SupervisorWorkspace
         auth={auth}
         overview={supervisorOverview}
+        systemClients={clients}
+        onSearchSystemClients={searchSystemClients}
         onLogout={handleLogout}
         onRefresh={refreshCurrentRole}
         onApproveReview={approveSupervisorReview}
         onApproveReviewBatch={approveSupervisorReviewBatch}
+        onOpenCollectorPreview={openSupervisorCollectorPreview}
+        collectorPreviewLoading={supervisorCollectorPreviewLoading}
         saving={saving}
         error={error}
+      />
+    );
+  }
+
+  if (auth.user.rol === "Admin" && adminCollectorPreviewOpen && adminCollectorPreviewPortfolio) {
+    return (
+      <CollectorWorkspace
+        auth={auth}
+        portfolio={adminCollectorPreviewPortfolio}
+        onLogout={() => setAdminCollectorPreviewOpen(false)}
+        onRefresh={() => openAdminCollectorPreview(adminCollectorPreviewId)}
+        onSubmitManagement={submitManagement}
+        onLoadDemographics={loadClientDemographics}
+        onUpdateDemographics={updateDemographics}
+        onLookupClient={lookupClientForWorkspace}
+        saving={saving}
+        error={error}
+        success={success}
+        exitLabel="Volver a admin"
       />
     );
   }
@@ -4011,6 +6531,32 @@ export default function App() {
         userImportProposal={adminUserImportProposal}
         generatedReport={adminGeneratedReport}
         dailySimulationSummary={adminDailySimulationSummary}
+        dailySimulationPreview={adminDailySimulationPreview}
+        recoveryVintage={adminRecoveryVintage}
+        recoveryVintageLoading={adminRecoveryVintageLoading}
+        recoveryVintageCompare={adminRecoveryVintageCompare}
+        executiveLog={adminExecutiveLog}
+        collectorPreviewPortfolio={adminCollectorPreviewPortfolio}
+        collectorPreviewId={adminCollectorPreviewId}
+        collectorPreviewLoading={adminCollectorPreviewLoading}
+        worklistGroupCatalog={adminWorklistGroupCatalog}
+        selectedUserGroups={adminSelectedUserGroups}
+        selectedUserGroupsUserId={adminSelectedUserGroupsUserId}
+        supervisorAssignments={adminSupervisorAssignments}
+        onOpenCollectorPreview={openAdminCollectorPreview}
+        onLoadUserGroups={loadAdminUserGroups}
+        onAssignGroupToUser={assignAdminGroup}
+        onUnassignGroupFromUser={unassignAdminGroup}
+        onAssignCollectorToSupervisor={assignCollectorToSupervisor}
+        onUnassignCollectorFromSupervisor={unassignCollectorFromSupervisor}
+        onLoadRecoveryVintage={loadAdminRecoveryVintage}
+        onLoadRecoveryVintageCompare={loadAdminRecoveryVintageCompare}
+        onLoadExecutiveLog={loadAdminExecutiveLog}
+        onDownloadRecoveryVintage={downloadAdminRecoveryVintage}
+        onDownloadRecoveryExecutiveDashboard={downloadAdminRecoveryExecutiveDashboard}
+        onRunSqlQuery={runAdminSqlQuery}
+        onAdminAssistantMessage={sendAdminAssistantMessage}
+        onPreviewOmnichannel={previewAdminOmnichannel}
         onLogout={handleLogout}
         onCreateStrategy={createStrategy}
         onAssignWorklist={assignWorklist}
@@ -4030,6 +6576,7 @@ export default function App() {
         onGenerateReport={generateAdminReport}
         onDownloadGeneratedReport={downloadAdminGeneratedReport}
         onRunDailySimulation={runAdminDailySimulation}
+        onPreviewDailySimulation={previewAdminDailySimulation}
         onSaveOmnichannelConfig={saveAdminOmnichannelConfig}
         onSendWhatsAppDemo={sendAdminWhatsAppDemo}
         saving={saving}
