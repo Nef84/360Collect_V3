@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
+import threading
 import unicodedata
 import zipfile
 import csv
@@ -80,6 +82,9 @@ ADMIN_DOCUMENT_PROPOSALS: dict[str, dict] = {}
 ADMIN_IMPORT_PROPOSALS: dict[str, dict] = {}
 ADMIN_USER_IMPORT_PROPOSALS: dict[str, dict] = {}
 RECOVERY_VINTAGE_START_YEAR = 2000
+BOOTSTRAP_STATE = {"status": "pending", "error": None}
+BOOTSTRAP_LOCK = threading.Lock()
+logger = logging.getLogger("360collect.bootstrap")
 
 
 def resolve_init_sql_path() -> Optional[Path]:
@@ -115,6 +120,24 @@ def seed_database_from_init_sql_if_empty() -> None:
         raw_connection.close()
 
 
+def bootstrap_runtime() -> None:
+    with BOOTSTRAP_LOCK:
+        if BOOTSTRAP_STATE["status"] in {"running", "ready"}:
+            return
+        BOOTSTRAP_STATE["status"] = "running"
+        BOOTSTRAP_STATE["error"] = None
+    try:
+        wait_for_database()
+        seed_database_from_init_sql_if_empty()
+        ensure_runtime_schema()
+        BOOTSTRAP_STATE["status"] = "ready"
+        logger.info("Bootstrap completed successfully.")
+    except Exception as exc:  # pragma: no cover - startup background path
+        BOOTSTRAP_STATE["status"] = "error"
+        BOOTSTRAP_STATE["error"] = str(exc)
+        logger.exception("Bootstrap failed.")
+
+
 
 def ensure_runtime_schema() -> None:
     ddl = """
@@ -135,7 +158,7 @@ def ensure_runtime_schema() -> None:
     SET identity_code = LPAD(REGEXP_REPLACE(COALESCE(identity_code, ''), '\\D', '', 'g'), 11, '0')
     WHERE identity_code IS NULL
        OR BTRIM(identity_code) = ''
-       OR identity_code !~ '^\d{11}$';
+       OR identity_code !~ '^\\d{11}$';
     ALTER TABLE clientes ALTER COLUMN identity_code SET NOT NULL;
     DO $$
     BEGIN
@@ -4173,14 +4196,18 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup() -> None:
-    wait_for_database()
-    seed_database_from_init_sql_if_empty()
-    ensure_runtime_schema()
+    threading.Thread(target=bootstrap_runtime, daemon=True).start()
 
 
 @app.get("/health")
 def healthcheck():
-    return {"status": "ok", "service": settings.app_name, "version": "2.0.0"}
+    return {
+        "status": "ok",
+        "service": settings.app_name,
+        "version": "2.0.0",
+        "bootstrap": BOOTSTRAP_STATE["status"],
+        "bootstrap_error": BOOTSTRAP_STATE["error"],
+    }
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -7950,7 +7977,7 @@ def record_assignment_history(
 
 @app.on_event("startup")
 def hydrate_assignment_history() -> None:
-    ensure_runtime_schema()
+    return None
 
 
 
