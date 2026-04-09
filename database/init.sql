@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
 
 CREATE TABLE IF NOT EXISTS clientes (
     id SERIAL PRIMARY KEY,
-    codigo_cliente VARCHAR(30) UNIQUE NOT NULL,
+    identity_code VARCHAR(30) UNIQUE NOT NULL,
     nombres VARCHAR(120) NOT NULL,
     apellidos VARCHAR(120) NOT NULL,
     dui VARCHAR(20) UNIQUE NOT NULL,
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS cuentas (
     estado VARCHAR(30) NOT NULL DEFAULT 'ACTIVA',
     fecha_apertura DATE,
     fecha_vencimiento DATE,
+    fecha_separacion DATE,
     tasa_interes NUMERIC(6,2) NOT NULL DEFAULT 0,
     es_estrafinanciamiento BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -216,27 +217,27 @@ INSERT INTO usuarios (nombre, email, username, password_hash, rol, activo) VALUE
 ('Gestor Usuarios Tres', 'gestor3@360collectplus.local', 'gestor3', 'Password123!', 'GestorUsuarios', TRUE),
 ('Collector Nueve', 'collector9@360collectplus.local', 'collector9', 'Password123!', 'Collector', TRUE);
 
-INSERT INTO clientes (codigo_cliente, nombres, apellidos, dui, nit, telefono, email, direccion, score_riesgo, segmento) VALUES
-('CLI001', 'Ana Lucia', 'Martinez Cruz', '10000001-1', '0614-010101-101-1', '7000-1001', 'ana.martinez@mail.com', 'San Salvador, Colonia Escalon', 0.21, 'Preferente'),
-('CLI002', 'Jose Manuel', 'Hernandez Flores', '10000002-2', '0614-010101-102-2', '7000-1002', 'jose.hernandez@mail.com', 'Santa Ana, Barrio San Rafael', 0.48, 'Masivo'),
-('CLI003', 'Carla Sofia', 'Lopez Ayala', '10000003-3', '0614-010101-103-3', '7000-1003', 'carla.lopez@mail.com', 'Soyapango, Reparto Las Canas', 0.57, 'Masivo'),
-('CLI004', 'Miguel Angel', 'Ramirez Ruiz', '10000004-4', '0614-010101-104-4', '7000-1004', 'miguel.ramirez@mail.com', 'Mejicanos, Colonia Zacamil', 0.69, 'Riesgo'),
-('CLI005', 'Rosa Elena', 'Guardado Perez', '10000005-5', '0614-010101-105-5', '7000-1005', 'rosa.guardado@mail.com', 'San Miguel, Jardines del Rio', 0.34, 'Preferente'),
-('CLI006', 'Luis Fernando', 'Pineda Torres', '10000006-6', '0614-010101-106-6', '7000-1006', 'luis.pineda@mail.com', 'Ilopango, Bosques del Matazano', 0.51, 'Masivo'),
-('CLI007', 'Patricia', 'Castro Molina', '10000007-7', '0614-010101-107-7', '7000-1007', 'patricia.castro@mail.com', 'Apopa, Valle Verde', 0.77, 'Riesgo'),
-('CLI008', 'Mauricio', 'Amaya Quintanilla', '10000008-8', '0614-010101-108-8', '7000-1008', 'mauricio.amaya@mail.com', 'Santa Tecla, Quezaltepec', 0.44, 'Masivo'),
-('CLI009', 'Daniela', 'Mendez Sorto', '10000009-9', '0614-010101-109-9', '7000-1009', 'daniela.mendez@mail.com', 'La Libertad, Zaragoza', 0.28, 'Preferente'),
-('CLI010', 'Oscar Rene', 'Vargas Alvarado', '10000010-0', '0614-010101-110-0', '7000-1010', 'oscar.vargas@mail.com', 'Sonsonate, Izalco', 0.61, 'Riesgo'),
-('CLI011', 'Gabriela', 'Serrano Mejia', '10000011-1', '0614-010101-111-1', '7000-1011', 'gabriela.serrano@mail.com', 'San Vicente, Colonia Madrid', 0.36, 'Masivo'),
-('CLI012', 'Ricardo', 'Calderon Ponce', '10000012-2', '0614-010101-112-2', '7000-1012', 'ricardo.calderon@mail.com', 'Usulutan, Puerto El Triunfo', 0.58, 'Masivo'),
-('CLI013', 'Claudia', 'Reyes Diaz', '10000013-3', '0614-010101-113-3', '7000-1013', 'claudia.reyes@mail.com', 'San Salvador, Miralvalle', 0.19, 'Preferente'),
-('CLI014', 'Nelson', 'Cruz Benitez', '10000014-4', '0614-010101-114-4', '7000-1014', 'nelson.cruz@mail.com', 'Santa Ana, Metapan', 0.73, 'Riesgo'),
-('CLI015', 'Monica', 'Pena Solis', '10000015-5', '0614-010101-115-5', '7000-1015', 'monica.pena@mail.com', 'Cuscatancingo, San Luis Mariona', 0.53, 'Masivo'),
-('CLI016', 'Ernesto', 'Melendez Castro', '10000016-6', '0614-010101-116-6', '7000-1016', 'ernesto.melendez@mail.com', 'Ahuachapan, Atiquizaya', 0.42, 'Masivo'),
-('CLI017', 'Silvia', 'Arias Portillo', '10000017-7', '0614-010101-117-7', '7000-1017', 'silvia.arias@mail.com', 'La Paz, Olocuilta', 0.26, 'Preferente'),
-('CLI018', 'Hector', 'Baires Mendoza', '10000018-8', '0614-010101-118-8', '7000-1018', 'hector.baires@mail.com', 'Morazan, San Francisco Gotera', 0.67, 'Riesgo'),
-('CLI019', 'Andrea', 'Chavez Dubon', '10000019-9', '0614-010101-119-9', '7000-1019', 'andrea.chavez@mail.com', 'Chalatenango, Nueva Concepcion', 0.31, 'Preferente'),
-('CLI020', 'Julio Cesar', 'Navarrete Rivas', '10000020-0', '0614-010101-120-0', '7000-1020', 'julio.navarrete@mail.com', 'Cabanas, Sensuntepeque', 0.64, 'Riesgo');
+INSERT INTO clientes (identity_code, nombres, apellidos, dui, nit, telefono, email, direccion, score_riesgo, segmento) VALUES
+('00000000001', 'Ana Lucia', 'Martinez Cruz', '10000001-1', '0614-010101-101-1', '7000-1001', 'ana.martinez@mail.com', 'San Salvador, Colonia Escalon', 0.21, 'Preferente'),
+('00000000002', 'Jose Manuel', 'Hernandez Flores', '10000002-2', '0614-010101-102-2', '7000-1002', 'jose.hernandez@mail.com', 'Santa Ana, Barrio San Rafael', 0.48, 'Masivo'),
+('00000000003', 'Carla Sofia', 'Lopez Ayala', '10000003-3', '0614-010101-103-3', '7000-1003', 'carla.lopez@mail.com', 'Soyapango, Reparto Las Canas', 0.57, 'Masivo'),
+('00000000004', 'Miguel Angel', 'Ramirez Ruiz', '10000004-4', '0614-010101-104-4', '7000-1004', 'miguel.ramirez@mail.com', 'Mejicanos, Colonia Zacamil', 0.69, 'Riesgo'),
+('00000000005', 'Rosa Elena', 'Guardado Perez', '10000005-5', '0614-010101-105-5', '7000-1005', 'rosa.guardado@mail.com', 'San Miguel, Jardines del Rio', 0.34, 'Preferente'),
+('00000000006', 'Luis Fernando', 'Pineda Torres', '10000006-6', '0614-010101-106-6', '7000-1006', 'luis.pineda@mail.com', 'Ilopango, Bosques del Matazano', 0.51, 'Masivo'),
+('00000000007', 'Patricia', 'Castro Molina', '10000007-7', '0614-010101-107-7', '7000-1007', 'patricia.castro@mail.com', 'Apopa, Valle Verde', 0.77, 'Riesgo'),
+('00000000008', 'Mauricio', 'Amaya Quintanilla', '10000008-8', '0614-010101-108-8', '7000-1008', 'mauricio.amaya@mail.com', 'Santa Tecla, Quezaltepec', 0.44, 'Masivo'),
+('00000000009', 'Daniela', 'Mendez Sorto', '10000009-9', '0614-010101-109-9', '7000-1009', 'daniela.mendez@mail.com', 'La Libertad, Zaragoza', 0.28, 'Preferente'),
+('00000000010', 'Oscar Rene', 'Vargas Alvarado', '10000010-0', '0614-010101-110-0', '7000-1010', 'oscar.vargas@mail.com', 'Sonsonate, Izalco', 0.61, 'Riesgo'),
+('00000000011', 'Gabriela', 'Serrano Mejia', '10000011-1', '0614-010101-111-1', '7000-1011', 'gabriela.serrano@mail.com', 'San Vicente, Colonia Madrid', 0.36, 'Masivo'),
+('00000000012', 'Ricardo', 'Calderon Ponce', '10000012-2', '0614-010101-112-2', '7000-1012', 'ricardo.calderon@mail.com', 'Usulutan, Puerto El Triunfo', 0.58, 'Masivo'),
+('00000000013', 'Claudia', 'Reyes Diaz', '10000013-3', '0614-010101-113-3', '7000-1013', 'claudia.reyes@mail.com', 'San Salvador, Miralvalle', 0.19, 'Preferente'),
+('00000000014', 'Nelson', 'Cruz Benitez', '10000014-4', '0614-010101-114-4', '7000-1014', 'nelson.cruz@mail.com', 'Santa Ana, Metapan', 0.73, 'Riesgo'),
+('00000000015', 'Monica', 'Pena Solis', '10000015-5', '0614-010101-115-5', '7000-1015', 'monica.pena@mail.com', 'Cuscatancingo, San Luis Mariona', 0.53, 'Masivo'),
+('00000000016', 'Ernesto', 'Melendez Castro', '10000016-6', '0614-010101-116-6', '7000-1016', 'ernesto.melendez@mail.com', 'Ahuachapan, Atiquizaya', 0.42, 'Masivo'),
+('00000000017', 'Silvia', 'Arias Portillo', '10000017-7', '0614-010101-117-7', '7000-1017', 'silvia.arias@mail.com', 'La Paz, Olocuilta', 0.26, 'Preferente'),
+('00000000018', 'Hector', 'Baires Mendoza', '10000018-8', '0614-010101-118-8', '7000-1018', 'hector.baires@mail.com', 'Morazan, San Francisco Gotera', 0.67, 'Riesgo'),
+('00000000019', 'Andrea', 'Chavez Dubon', '10000019-9', '0614-010101-119-9', '7000-1019', 'andrea.chavez@mail.com', 'Chalatenango, Nueva Concepcion', 0.31, 'Preferente'),
+('00000000020', 'Julio Cesar', 'Navarrete Rivas', '10000020-0', '0614-010101-120-0', '7000-1020', 'julio.navarrete@mail.com', 'Cabanas, Sensuntepeque', 0.64, 'Riesgo');
 
 INSERT INTO cuentas (cliente_id, numero_cuenta, tipo_producto, subtipo_producto, saldo_capital, saldo_mora, saldo_total, dias_mora, bucket_actual, estado, fecha_apertura, fecha_vencimiento, tasa_interes, es_estrafinanciamiento) VALUES
 (1, 'PRE-0001', 'Prestamo', 'Consumo', 1800.00, 125.00, 1925.00, 18, '0-30', 'ACTIVA', '2024-01-15', '2027-01-15', 14.50, FALSE),
@@ -373,9 +374,9 @@ ln AS (
 mn AS (
     SELECT ARRAY['Alberto','Lucia','Elena','Daniel','Sofia','Mauricio','Ernesto','Natalia','Samuel','Valeria','Manuel','Paola','Camila','Rafael','Cecilia','Nelson','Tatiana','Rolando','Claudia','Miguel'] AS arr
 )
-INSERT INTO clientes (codigo_cliente, nombres, apellidos, dui, nit, telefono, email, direccion, score_riesgo, segmento)
+INSERT INTO clientes (identity_code, nombres, apellidos, dui, nit, telefono, email, direccion, score_riesgo, segmento)
 SELECT
-    'CLX' || LPAD(gs::text, 5, '0'),
+    LPAD(gs::text, 11, '0'),
     (SELECT arr[(gs % 20) + 1] FROM fn) || ' ' || (SELECT arr[((gs + 7) % 20) + 1] FROM mn),
     (SELECT arr[((gs + 3) % 20) + 1] FROM ln) || ' ' || (SELECT arr[((gs + 11) % 20) + 1] FROM ln),
     '2' || LPAD(gs::text, 7, '0') || '-' || (gs % 10),
@@ -397,7 +398,7 @@ SELECT
         ELSE 'Recuperacion'
     END
 FROM generate_series(21, 50000) AS gs
-WHERE NOT EXISTS (SELECT 1 FROM clientes WHERE codigo_cliente = 'CLX' || LPAD(gs::text, 5, '0'));
+WHERE NOT EXISTS (SELECT 1 FROM clientes WHERE identity_code = LPAD(gs::text, 11, '0'));
 
 INSERT INTO cuentas (cliente_id, numero_cuenta, tipo_producto, subtipo_producto, saldo_capital, saldo_mora, saldo_total, dias_mora, bucket_actual, estado, fecha_apertura, fecha_vencimiento, tasa_interes, es_estrafinanciamiento)
 SELECT

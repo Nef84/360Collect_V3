@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, Numeric, String, Text, func
@@ -27,7 +27,7 @@ class Cliente(Base):
     __tablename__ = "clientes"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    codigo_cliente: Mapped[str] = mapped_column(String(30), unique=True, nullable=False, index=True)
+    identity_code: Mapped[str] = mapped_column(String(30), unique=True, nullable=False, index=True)
     nombres: Mapped[str] = mapped_column(String(120), nullable=False)
     apellidos: Mapped[str] = mapped_column(String(120), nullable=False)
     dui: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
@@ -40,6 +40,14 @@ class Cliente(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     cuentas: Mapped[list["Cuenta"]] = relationship(back_populates="cliente")
+
+    @property
+    def codigo_cliente(self) -> str:
+        return self.identity_code
+
+    @codigo_cliente.setter
+    def codigo_cliente(self, value: str) -> None:
+        self.identity_code = value
 
 
 class Cuenta(Base):
@@ -58,6 +66,7 @@ class Cuenta(Base):
     estado: Mapped[str] = mapped_column(String(30), nullable=False, default="ACTIVA")
     fecha_apertura: Mapped[Optional[datetime]] = mapped_column(Date)
     fecha_vencimiento: Mapped[Optional[datetime]] = mapped_column(Date)
+    fecha_separacion: Mapped[Optional[date]] = mapped_column(Date, index=True)
     tasa_interes: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     es_estrafinanciamiento: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

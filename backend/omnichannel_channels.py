@@ -46,7 +46,7 @@ def build_collection_email_html(
     strategy_code: str,
     total_due: float,
     minimum_payment: float,
-    account_last4: str,
+    account_reference: str,
     due_date_str: str,
     institution_name: str = "360CollectPlus",
 ) -> tuple[str, str]:
@@ -68,7 +68,7 @@ def build_collection_email_html(
     if strategy_code in {"AL_DIA", "PREVENTIVO"}:
         greeting = f"Estimado/a {client_name},"
         body_text = (
-            f"Le recordamos que su cuenta con terminación <strong>{account_last4}</strong> "
+            f"Le recordamos que su cuenta <strong>{account_reference}</strong> "
             f"tiene una fecha de pago próxima el <strong>{due_date_str}</strong>.<br><br>"
             f"Mantenga su cuenta al día y evite cargos por mora. "
             f"El pago mínimo sugerido es de <strong>${minimum_payment:,.2f}</strong>."
@@ -77,7 +77,7 @@ def build_collection_email_html(
     elif strategy_code in {"FMORA1", "MMORA2"}:
         greeting = f"Estimado/a {client_name},"
         body_text = (
-            f"Su cuenta terminación <strong>{account_last4}</strong> presenta un saldo vencido "
+            f"Su cuenta <strong>{account_reference}</strong> presenta un saldo vencido "
             f"de <strong>${total_due:,.2f}</strong>.<br><br>"
             f"Para regularizarla hoy, necesitamos un pago mínimo de "
             f"<strong>${minimum_payment:,.2f}</strong> a más tardar el <strong>{due_date_str}</strong>."
@@ -86,14 +86,14 @@ def build_collection_email_html(
     else:
         greeting = f"Estimado/a {client_name},"
         body_text = (
-            f"Su cuenta terminación <strong>{account_last4}</strong> requiere atención inmediata. "
+            f"Su cuenta <strong>{account_reference}</strong> requiere atención inmediata. "
             f"Saldo vencido acumulado: <strong>${total_due:,.2f}</strong>.<br><br>"
             f"Contáctenos antes del <strong>{due_date_str}</strong> para acordar un plan de pago "
             f"y evitar el escalamiento de su caso. Pago mínimo: <strong>${minimum_payment:,.2f}</strong>."
         )
         cta = "Hablar con un asesor"
 
-    subject = f"[{institution_name}] {subject_suffix} — Cuenta ...{account_last4}"
+    subject = f"[{institution_name}] {subject_suffix} — Cuenta {account_reference}"
 
     html = f"""<!DOCTYPE html>
 <html lang="es">
@@ -196,6 +196,8 @@ def send_email_resend(
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "360CollectPlus/2.0",
         },
     )
     try:

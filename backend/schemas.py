@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -52,7 +52,7 @@ class UserRead(UserBase):
 # ── Clients ──────────────────────────────────────────────────────────────────
 
 class ClienteBase(BaseModel):
-    codigo_cliente: str
+    identity_code: str
     nombres: str
     apellidos: str
     dui: str
@@ -94,6 +94,7 @@ class CuentaBase(BaseModel):
     dias_mora: int = 0
     bucket_actual: str = "0-30"
     estado: str = "ACTIVA"
+    fecha_separacion: Optional[date] = None
     tasa_interes: float = 0
     es_estrafinanciamiento: bool = False
 
@@ -189,7 +190,7 @@ class ManagementHistoryRead(BaseModel):
 
 class CollectorClientRead(BaseModel):
     id: int
-    codigo_cliente: str
+    identity_code: str
     nombres: str
     apellidos: str
     telefono: Optional[str] = None
@@ -255,6 +256,36 @@ class DemographicUpdate(BaseModel):
     telefono: Optional[str] = None
     email: Optional[str] = None
     direccion: Optional[str] = None
+    phones: list["DemographicPhoneItem"] = Field(default_factory=list)
+    emails: list["DemographicEmailItem"] = Field(default_factory=list)
+    addresses: list["DemographicAddressItem"] = Field(default_factory=list)
+
+
+class DemographicPhoneItem(BaseModel):
+    id: Optional[int] = None
+    phone_type: str = Field(default="CEL", min_length=3, max_length=20)
+    value: str = Field(..., min_length=3, max_length=40)
+    is_primary: bool = False
+
+
+class DemographicEmailItem(BaseModel):
+    id: Optional[int] = None
+    value: str = Field(..., min_length=5, max_length=180)
+    is_primary: bool = False
+
+
+class DemographicAddressItem(BaseModel):
+    id: Optional[int] = None
+    address_type: str = Field(default="CASA", min_length=3, max_length=20)
+    value: str = Field(..., min_length=5, max_length=500)
+    is_primary: bool = False
+
+
+class DemographicProfileRead(BaseModel):
+    cliente_id: int
+    phones: list[DemographicPhoneItem] = Field(default_factory=list)
+    emails: list[DemographicEmailItem] = Field(default_factory=list)
+    addresses: list[DemographicAddressItem] = Field(default_factory=list)
 
 
 # ── Supervisor ───────────────────────────────────────────────────────────────
@@ -306,14 +337,50 @@ class WorklistAssignRequest(BaseModel):
     client_ids: list[int]
 
 
+class WorklistGroupRead(BaseModel):
+    strategy_code: Optional[str] = None
+    placement_code: Optional[str] = None
+    group_id: Optional[str] = None
+    channel_scope: Optional[str] = None
+    client_count: int
+    display_name: str
+
+
+class WorklistGroupAssignRequest(BaseModel):
+    user_id: int
+    group_id: str = Field(..., min_length=3, max_length=40)
+    strategy_code: Optional[str] = None
+    placement_code: Optional[str] = None
+    reassign_existing: bool = True
+
+
+class WorklistGroupUnassignRequest(BaseModel):
+    user_id: int
+    group_id: str = Field(..., min_length=3, max_length=40)
+    strategy_code: Optional[str] = None
+    placement_code: Optional[str] = None
+
+
+class SupervisorCollectorAssignRequest(BaseModel):
+    supervisor_id: int
+    collector_id: int
+
+
+class SupervisorCollectorAssignmentRead(BaseModel):
+    supervisor: UserRead
+    collectors: list[UserRead]
+
+
 class AdminOverviewResponse(BaseModel):
     strategies: list[StrategyRead]
     collectors: list[UserRead]
+    supervisors: list[UserRead]
     total_clients: int
     assigned_clients: int
     unassigned_clients: int
     hmr_clients: int
     omnichannel: dict
+    alerts: list[dict] = Field(default_factory=list)
 
 
 class AssignmentHistoryRead(BaseModel):
@@ -395,6 +462,7 @@ class AdminGeneratedReportResponse(BaseModel):
 class AdminDailySimulationRequest(BaseModel):
     fmora1_clients: int = Field(default=250, ge=0, le=5000)
     preventivo_clients: int = Field(default=120, ge=0, le=5000)
+    recovery_clients: int = Field(default=1000, ge=0, le=10000)
 
 
 class AdminDailySimulationResponse(BaseModel):
@@ -402,9 +470,105 @@ class AdminDailySimulationResponse(BaseModel):
     aged_accounts: int
     inserted_fmora1_clients: int
     inserted_preventivo_clients: int
+    inserted_recovery_clients: int = 0
+    simulated_payments: int = 0
+    fully_cured_accounts: int = 0
+    recovery_rotations: int = 0
     total_clients: int
     total_accounts: int
     message: str
+
+
+class AdminDailySimulationPreviewResponse(BaseModel):
+    simulation_key: str
+    already_applied_today: bool = False
+    aged_accounts: int
+    inserted_fmora1_clients: int
+    inserted_preventivo_clients: int
+    inserted_recovery_clients: int = 0
+    simulated_payments: int = 0
+    fully_cured_accounts: int = 0
+    recovery_rotations: int = 0
+    projected_total_clients: int
+    projected_total_accounts: int
+    warnings: list[str] = Field(default_factory=list)
+    message: str
+
+
+class RecoveryVintagePlacementRead(BaseModel):
+    placement_code: str
+    client_count: int
+    paying_clients_120d: int
+    total_paid_120d: float
+    total_balance: float = 0
+    total_due: float = 0
+    v11_eligible_clients: int
+    best_group_id: Optional[str] = None
+    best_group_rate_120d: float = 0
+    lagging_group_id: Optional[str] = None
+    lagging_group_rate_120d: float = 0
+    agencies: list["RecoveryVintageAgencyRead"] = Field(default_factory=list)
+
+
+class RecoveryVintageAgencyRead(BaseModel):
+    group_id: str
+    channel_scope: Optional[str] = None
+    client_count: int
+    paying_clients_120d: int
+    total_paid_120d: float
+    total_balance: float = 0
+    total_due: float = 0
+    v11_eligible_clients: int
+    payment_rate_120d: float
+
+
+class RecoveryVintageClientRead(BaseModel):
+    client_id: int
+    identity_code: str
+    client_name: str
+    separation_date: date
+    current_status: Optional[str] = None
+    current_placement: Optional[str] = None
+    current_group_id: Optional[str] = None
+    current_scope: Optional[str] = None
+    account_count: int
+    total_balance: float = 0
+    total_due: float = 0
+    qualifying_payment_count_120d: int
+    total_paid_120d: float
+    max_payment_120d: float
+    last_payment_date: Optional[datetime] = None
+    movement_path: str
+    qualifies_for_v11: bool
+
+
+class RecoveryVintageOverviewResponse(BaseModel):
+    year: int
+    lookback_days: int
+    payment_threshold: float
+    total_clients: int
+    total_balance: float = 0
+    total_due: float = 0
+    active_payers_120d: int
+    v11_clients: int
+    placements_tracked: int
+    placements: list[RecoveryVintagePlacementRead]
+    sample_clients: list[RecoveryVintageClientRead]
+
+
+class RecoveryVintageCompareItem(BaseModel):
+    year: int
+    total_clients: int
+    total_balance: float = 0
+    total_due: float = 0
+    active_payers_120d: int
+    placements_tracked: int
+    placement_distribution: dict[str, int] = Field(default_factory=dict)
+
+
+class RecoveryVintageCompareResponse(BaseModel):
+    years: list[int]
+    items: list[RecoveryVintageCompareItem]
 
 
 class AdminOmnichannelConfigUpdate(BaseModel):
@@ -465,3 +629,54 @@ class AdminWhatsAppDemoSendRequest(BaseModel):
     client_id: Optional[int] = None
     strategy_code: Optional[str] = None
     custom_message: Optional[str] = None
+
+
+class AdminOmnichannelPreviewResponse(BaseModel):
+    channel: str
+    strategy_code: str
+    client_name: Optional[str] = None
+    identity_code: Optional[str] = None
+    account_reference: Optional[str] = None
+    subject: Optional[str] = None
+    html: Optional[str] = None
+    message: Optional[str] = None
+
+
+class AdminAssistantRequest(BaseModel):
+    message: str = Field(..., min_length=3, max_length=1000)
+    apply_change: bool = False
+
+
+class AdminAssistantResponse(BaseModel):
+    action_code: str
+    interpreted_message: str
+    response_message: str
+    requires_confirmation: bool = False
+    can_apply: bool = False
+    executed: bool = False
+    data: dict = Field(default_factory=dict)
+
+
+class AdminSqlQueryRequest(BaseModel):
+    query: str = Field(..., min_length=6, max_length=12000)
+    max_rows: int = Field(default=200, ge=1, le=1000)
+
+
+class AdminSqlQueryResponse(BaseModel):
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict] = Field(default_factory=list)
+    row_count: int = 0
+    truncated: bool = False
+    duration_ms: int = 0
+    normalized_query: str = ""
+
+
+class AdminHistoryEventRead(BaseModel):
+    id: int
+    entidad: str
+    entidad_id: int
+    accion: str
+    descripcion: Optional[str] = None
+    usuario_id: Optional[int] = None
+    usuario_nombre: Optional[str] = None
+    created_at: Optional[datetime] = None
