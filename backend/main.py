@@ -4238,25 +4238,28 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
-    import asyncio
+    # ✅ Seed en background thread — el event loop queda libre y Uvicorn
+    # puede bindear el puerto inmediatamente. Render detecta el puerto OK.
+    import threading
+    import time
 
-    async def seed_with_retry():
-        max_retries = 10
+    def _seed_background():
+        max_retries = 12
         for attempt in range(max_retries):
             try:
                 ensure_minimal_demo_users()
                 print("✅ Demo users seeded successfully.")
                 return
-            except Exception as e:
+            except Exception as exc:
                 if attempt < max_retries - 1:
-                    wait = 5 * (attempt + 1)
-                    print(f"⚠️ DB not ready (attempt {attempt+1}/{max_retries}), retrying in {wait}s... {e}")
-                    await asyncio.sleep(wait)  # ✅ NO bloquea el event loop
+                    wait = min(10 * (attempt + 1), 60)
+                    print(f"⚠️ DB not ready (attempt {attempt+1}/{max_retries}), retry in {wait}s — {exc}")
+                    time.sleep(wait)
                 else:
-                    print(f"❌ WARNING: Could not seed DB after {max_retries} attempts: {e}")
+                    print(f"❌ Seed failed after {max_retries} attempts: {exc}")
 
-    # Lanzar en background para que Uvicorn pueda bindear el puerto de inmediato
-    asyncio.ensure_future(seed_with_retry())
+    threading.Thread(target=_seed_background, daemon=True).start()
+    # on_startup retorna aquí de inmediato → Uvicorn bindea el puerto → Render lo detecta
 
 
 @app.get("/health")
