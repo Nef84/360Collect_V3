@@ -100,25 +100,100 @@ def resolve_init_sql_path() -> Optional[Path]:
     return None
 
 
+def reset_seed_sequences(connection) -> None:
+    sequence_tables = [
+        "usuarios",
+        "clientes",
+        "cuentas",
+        "pagos",
+        "promesas",
+        "history",
+        "estrategias",
+        "asignaciones_cartera",
+        "assignment_history",
+        "predicciones_ia",
+        "agencias",
+        "agentes",
+        "campanas",
+        "bucket_historial",
+    ]
+    for table_name in sequence_tables:
+        sequence_name = connection.execute(
+            text(f"SELECT pg_get_serial_sequence('{table_name}', 'id')")
+        ).scalar()
+        if sequence_name:
+            connection.execute(text(f"SELECT setval('{sequence_name}', 1, false)"))
+
+
+def cleanup_partial_seed_state() -> None:
+    delete_order = [
+        "assignment_history",
+        "predicciones_ia",
+        "promesas",
+        "pagos",
+        "history",
+        "bucket_historial",
+        "asignaciones_cartera",
+        "cuentas",
+        "whatsapp_bot_sessions",
+        "clientes",
+        "campanas",
+        "estrategias",
+        "agentes",
+        "agencias",
+        "usuarios",
+    ]
+    with engine.begin() as connection:
+        for table_name in delete_order:
+            exists = connection.execute(
+                text("SELECT to_regclass(:table_name)"),
+                {"table_name": f"public.{table_name}"},
+            ).scalar()
+            if exists:
+                connection.execute(text(f'DELETE FROM "{table_name}"'))
+        reset_seed_sequences(connection)
+
+
 def seed_database_from_init_sql_if_empty() -> None:
     Base.metadata.create_all(bind=engine)
+    needs_cleanup = False
     with engine.begin() as connection:
-        user_count = connection.execute(text("SELECT COUNT(*) FROM usuarios")).scalar() or 0
-        if int(user_count) > 0:
+        user_count = int(connection.execute(text("SELECT COUNT(*) FROM usuarios")).scalar() or 0)
+        client_count = int(connection.execute(text("SELECT COUNT(*) FROM clientes")).scalar() or 0)
+        account_count = int(connection.execute(text("SELECT COUNT(*) FROM cuentas")).scalar() or 0)
+        if client_count > 0 and account_count > 0:
             return
+        if user_count > 0 or client_count > 0 or account_count > 0:
+            needs_cleanup = True
+        else:
+            reset_seed_sequences(connection)
+    if needs_cleanup:
+        cleanup_partial_seed_state()
 
     init_sql_path = resolve_init_sql_path()
     if not init_sql_path:
         raise RuntimeError("No se encontró database/init.sql para sembrar la base de datos inicial.")
 
     script = init_sql_path.read_text(encoding="utf-8")
-    raw_connection = engine.raw_connection()
-    try:
-        cursor = raw_connection.cursor()
-        cursor.execute(script)
-        raw_connection.commit()
-    finally:
-        raw_connection.close()
+    last_error: Optional[Exception] = None
+    for attempt in range(2):
+        raw_connection = engine.raw_connection()
+        try:
+            cursor = raw_connection.cursor()
+            cursor.execute(script)
+            raw_connection.commit()
+            return
+        except Exception as exc:
+            raw_connection.rollback()
+            last_error = exc
+            if attempt == 0:
+                cleanup_partial_seed_state()
+            else:
+                raise
+        finally:
+            raw_connection.close()
+    if last_error:
+        raise last_error
 
 
 def ensure_minimal_demo_users() -> None:
