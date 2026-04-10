@@ -8,8 +8,14 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from config import settings
 
-ENGINE_CONNECT_ARGS = {"connect_timeout": 15}
-if "render.com" in settings.database_url or "dpg-" in settings.database_url:
+ENGINE_CONNECT_ARGS = {
+    "connect_timeout": 60,
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 5,
+}
+if ".render.com" in settings.database_url:
     ENGINE_CONNECT_ARGS["sslmode"] = "require"
 
 engine = create_engine(
