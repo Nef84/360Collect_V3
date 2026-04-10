@@ -118,6 +118,12 @@ def reset_seed_sequences(connection) -> None:
         "bucket_historial",
     ]
     for table_name in sequence_tables:
+        table_regclass = connection.execute(
+            text("SELECT to_regclass(:table_name)"),
+            {"table_name": f"public.{table_name}"},
+        ).scalar()
+        if not table_regclass:
+            continue
         sequence_name = connection.execute(
             text(f"SELECT pg_get_serial_sequence('{table_name}', 'id')")
         ).scalar()
