@@ -4238,20 +4238,25 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
-    import time
-    max_retries = 10
-    for attempt in range(max_retries):
-        try:
-            ensure_minimal_demo_users()
-            print("✅ Demo users seeded successfully.")
-            break
-        except Exception as e:
-            if attempt < max_retries - 1:
-                wait = 5 * (attempt + 1)
-                print(f"⚠️ DB not ready (attempt {attempt+1}/{max_retries}), retrying in {wait}s... {e}")
-                time.sleep(wait)
-            else:
-                print(f"❌ WARNING: Could not seed DB after {max_retries} attempts: {e}")
+    import asyncio
+
+    async def seed_with_retry():
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                ensure_minimal_demo_users()
+                print("✅ Demo users seeded successfully.")
+                return
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait = 5 * (attempt + 1)
+                    print(f"⚠️ DB not ready (attempt {attempt+1}/{max_retries}), retrying in {wait}s... {e}")
+                    await asyncio.sleep(wait)  # ✅ NO bloquea el event loop
+                else:
+                    print(f"❌ WARNING: Could not seed DB after {max_retries} attempts: {e}")
+
+    # Lanzar en background para que Uvicorn pueda bindear el puerto de inmediato
+    asyncio.ensure_future(seed_with_retry())
 
 
 @app.get("/health")
