@@ -27,6 +27,7 @@ from fastapi.responses import Response, StreamingResponse
 from jose import jwt
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 # ── Local modules ─────────────────────────────────────────────────────────────
@@ -4263,17 +4264,30 @@ def login(
     db: Session = Depends(get_db),
 ):
     check_login_rate_limit(request)
-    user = db.query(Usuario).filter(Usuario.username == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Credenciales inválidas.")
-    user.ultimo_login = datetime.now(timezone.utc)
-    db.commit()
-    return TokenResponse(
-        access_token=create_access_token(user.username),
-        refresh_token=create_refresh_token(user.username),
-        expires_in=settings.jwt_expire_minutes * 60,
-        user=UserRead.model_validate(user),
-    )
+    if BOOTSTRAP_STATE["status"] == "error":
+        raise HTTPException(
+            status_code=503,
+            detail=f"El sistema aún no termina de inicializarse: {BOOTSTRAP_STATE['error']}",
+        )
+    try:
+        user = db.query(Usuario).filter(Usuario.username == form_data.username).first()
+        if not user or not verify_password(form_data.password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Credenciales inválidas.")
+        user.ultimo_login = datetime.now(timezone.utc)
+        db.commit()
+        return TokenResponse(
+            access_token=create_access_token(user.username),
+            refresh_token=create_refresh_token(user.username),
+            expires_in=settings.jwt_expire_minutes * 60,
+            user=UserRead.model_validate(user),
+        )
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=503,
+            detail="La base de datos aún se está inicializando. Intenta iniciar sesión de nuevo en unos segundos.",
+        )
 
 
 @app.post("/auth/refresh", response_model=TokenResponse)
