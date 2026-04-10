@@ -35,15 +35,12 @@ services:
     type: web
     runtime: static
     rootDir: frontend
-    buildCommand: npm install && VITE_API_URL=https://$BACKEND_HOST npm run build
+    buildCommand: npm install && npm run build
     staticPublishPath: dist
     autoDeployTrigger: commit
     envVars:
-      - key: BACKEND_HOST
-        fromService:
-          type: web
-          name: api-360collect
-          envVarKey: RENDER_EXTERNAL_HOSTNAME
+      - key: VITE_API_URL
+        value: https://api-360collect.onrender.com
     routes:
       - type: rewrite
         source: /*
