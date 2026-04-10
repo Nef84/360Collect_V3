@@ -4238,28 +4238,15 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
-    # ✅ Seed en background thread — el event loop queda libre y Uvicorn
-    # puede bindear el puerto inmediatamente. Render detecta el puerto OK.
+    # ✅ bootstrap_runtime() en background thread:
+    #   - wait_for_database(): espera Postgres
+    #   - seed_database_from_init_sql_if_empty(): datos iniciales
+    #   - ensure_runtime_schema(): migraciones DDL
+    #   - BOOTSTRAP_STATE["status"] = "ready"  ← desbloquea el login
+    # El thread daemon no bloquea el event loop → Uvicorn bindea el puerto
+    # de inmediato → Render detecta el puerto sin timeout.
     import threading
-    import time
-
-    def _seed_background():
-        max_retries = 12
-        for attempt in range(max_retries):
-            try:
-                ensure_minimal_demo_users()
-                print("✅ Demo users seeded successfully.")
-                return
-            except Exception as exc:
-                if attempt < max_retries - 1:
-                    wait = min(10 * (attempt + 1), 60)
-                    print(f"⚠️ DB not ready (attempt {attempt+1}/{max_retries}), retry in {wait}s — {exc}")
-                    time.sleep(wait)
-                else:
-                    print(f"❌ Seed failed after {max_retries} attempts: {exc}")
-
-    threading.Thread(target=_seed_background, daemon=True).start()
-    # on_startup retorna aquí de inmediato → Uvicorn bindea el puerto → Render lo detecta
+    threading.Thread(target=bootstrap_runtime, daemon=True).start()
 
 
 @app.get("/health")
