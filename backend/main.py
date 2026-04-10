@@ -120,6 +120,49 @@ def seed_database_from_init_sql_if_empty() -> None:
         raw_connection.close()
 
 
+def ensure_minimal_demo_users() -> None:
+    Base.metadata.create_all(bind=engine)
+    demo_users = [
+        {
+            "nombre": "Administrador General",
+            "email": "admin@360collectplus.demo",
+            "username": "admin",
+            "rol": "Admin",
+        },
+        {
+            "nombre": "Collector Uno",
+            "email": "collector1@360collectplus.demo",
+            "username": "collector1",
+            "rol": "Collector",
+        },
+        {
+            "nombre": "Supervisor Uno",
+            "email": "supervisor1@360collectplus.demo",
+            "username": "supervisor1",
+            "rol": "Supervisor",
+        },
+    ]
+    db = SessionLocal()
+    try:
+        for payload in demo_users:
+            existing = db.query(Usuario).filter(Usuario.username == payload["username"]).first()
+            if existing:
+                continue
+            db.add(
+                Usuario(
+                    nombre=payload["nombre"],
+                    email=payload["email"],
+                    username=payload["username"],
+                    rol=payload["rol"],
+                    activo=True,
+                    password_hash=hash_password("Password123!"),
+                )
+            )
+        db.commit()
+    finally:
+        db.close()
+
+
 def bootstrap_runtime() -> None:
     with BOOTSTRAP_LOCK:
         if BOOTSTRAP_STATE["status"] in {"running", "ready"}:
@@ -4196,6 +4239,10 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup() -> None:
+    try:
+        ensure_minimal_demo_users()
+    except Exception:
+        logger.exception("No se pudieron garantizar los usuarios demo iniciales.")
     threading.Thread(target=bootstrap_runtime, daemon=True).start()
 
 
