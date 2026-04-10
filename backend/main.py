@@ -4271,7 +4271,11 @@ def login(
     if BOOTSTRAP_STATE["status"] == "error":
         raise HTTPException(
             status_code=503,
-            detail=f"El sistema aún no termina de inicializarse: {BOOTSTRAP_STATE['error']}",
+            detail=(
+                f"El sistema aún no termina de inicializarse: {BOOTSTRAP_STATE['error']}"
+                if BOOTSTRAP_STATE["error"]
+                else "La base de datos aún se está inicializando. Intenta iniciar sesión de nuevo en unos segundos."
+            ),
         )
     try:
         user = db.query(Usuario).filter(Usuario.username == form_data.username).first()
