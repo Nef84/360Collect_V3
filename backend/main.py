@@ -4226,12 +4226,10 @@ def resolve_strategy(account: Cuenta, today: datetime) -> str:
 # ── FastAPI App ───────────────────────────────────────────────────────────────
 app = FastAPI(title=settings.app_name, version="2.0.0", docs_url="/docs", redoc_url="/redoc")
 
-allowed_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_cors_origins,
-    allow_origin_regex=r"^https:\/\/([a-z0-9-]+\.trycloudflare\.com|[a-z0-9-]+\.onrender\.com)$",
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
