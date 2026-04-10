@@ -4237,12 +4237,21 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-def on_startup() -> None:
-    try:
-        ensure_minimal_demo_users()
-    except Exception:
-        logger.exception("No se pudieron garantizar los usuarios demo iniciales.")
-    threading.Thread(target=bootstrap_runtime, daemon=True).start()
+async def on_startup():
+    import time
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            ensure_minimal_demo_users()
+            print("✅ Demo users seeded successfully.")
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait = 5 * (attempt + 1)
+                print(f"⚠️ DB not ready (attempt {attempt+1}/{max_retries}), retrying in {wait}s... {e}")
+                time.sleep(wait)
+            else:
+                print(f"❌ WARNING: Could not seed DB after {max_retries} attempts: {e}")
 
 
 @app.get("/health")
