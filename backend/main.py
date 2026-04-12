@@ -100,106 +100,25 @@ def resolve_init_sql_path() -> Optional[Path]:
     return None
 
 
-def reset_seed_sequences(connection) -> None:
-    sequence_tables = [
-        "usuarios",
-        "clientes",
-        "cuentas",
-        "pagos",
-        "promesas",
-        "history",
-        "estrategias",
-        "asignaciones_cartera",
-        "assignment_history",
-        "predicciones_ia",
-        "agencias",
-        "agentes",
-        "campanas",
-        "bucket_historial",
-    ]
-    for table_name in sequence_tables:
-        table_regclass = connection.execute(
-            text("SELECT to_regclass(:table_name)"),
-            {"table_name": f"public.{table_name}"},
-        ).scalar()
-        if not table_regclass:
-            continue
-        sequence_name = connection.execute(
-            text(f"SELECT pg_get_serial_sequence('{table_name}', 'id')")
-        ).scalar()
-        if sequence_name:
-            connection.execute(text(f"SELECT setval('{sequence_name}', 1, false)"))
-
-
-def cleanup_partial_seed_state() -> None:
-    delete_order = [
-        "assignment_history",
-        "predicciones_ia",
-        "promesas",
-        "pagos",
-        "history",
-        "bucket_historial",
-        "asignaciones_cartera",
-        "cuentas",
-        "whatsapp_bot_sessions",
-        "clientes",
-        "campanas",
-        "estrategias",
-        "agentes",
-        "agencias",
-        "usuarios",
-    ]
-    with engine.begin() as connection:
-        for table_name in delete_order:
-            exists = connection.execute(
-                text("SELECT to_regclass(:table_name)"),
-                {"table_name": f"public.{table_name}"},
-            ).scalar()
-            if exists:
-                connection.execute(text(f'DELETE FROM "{table_name}"'))
-        reset_seed_sequences(connection)
-
-
 def seed_database_from_init_sql_if_empty() -> None:
     Base.metadata.create_all(bind=engine)
-    needs_cleanup = False
     with engine.begin() as connection:
-        user_count = int(connection.execute(text("SELECT COUNT(*) FROM usuarios")).scalar() or 0)
-        client_count = int(connection.execute(text("SELECT COUNT(*) FROM clientes")).scalar() or 0)
-        account_count = int(connection.execute(text("SELECT COUNT(*) FROM cuentas")).scalar() or 0)
-        if client_count > 0 and account_count > 0:
+        user_count = connection.execute(text("SELECT COUNT(*) FROM usuarios")).scalar() or 0
+        if int(user_count) > 0:
             return
-        if user_count > 0 or client_count > 0 or account_count > 0:
-            needs_cleanup = True
-        else:
-            reset_seed_sequences(connection)
-    if needs_cleanup:
-        cleanup_partial_seed_state()
 
     init_sql_path = resolve_init_sql_path()
     if not init_sql_path:
         raise RuntimeError("No se encontró database/init.sql para sembrar la base de datos inicial.")
 
     script = init_sql_path.read_text(encoding="utf-8")
-    last_error: Optional[Exception] = None
-    for attempt in range(2):
-        raw_connection = engine.raw_connection()
-        try:
-            cursor = raw_connection.cursor()
-            cursor.execute(script)
-            raw_connection.commit()
-            return
-        except Exception as exc:
-            raw_connection.rollback()
-            last_error = exc
-            if attempt == 0:
-                cleanup_partial_seed_state()
-            else:
-                raise
-        finally:
-            raw_connection.close()
-    if last_error:
-        raise last_error
+    raw_connection = engine.raw_connection()
+    try:
+        cursor = raw_connection.cursor()
+        cursor.execute(script)
+        raw_connection.commit()
+    finally:
+        raw_connection.close()
 
 
 def ensure_minimal_demo_users() -> None:
@@ -4319,15 +4238,20 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
-    # ✅ bootstrap_runtime() en background thread:
-    #   - wait_for_database(): espera Postgres
-    #   - seed_database_from_init_sql_if_empty(): datos iniciales
-    #   - ensure_runtime_schema(): migraciones DDL
-    #   - BOOTSTRAP_STATE["status"] = "ready"  ← desbloquea el login
-    # El thread daemon no bloquea el event loop → Uvicorn bindea el puerto
-    # de inmediato → Render detecta el puerto sin timeout.
-    import threading
-    threading.Thread(target=bootstrap_runtime, daemon=True).start()
+    import time
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            ensure_minimal_demo_users()
+            print("✅ Demo users seeded successfully.")
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait = 5 * (attempt + 1)
+                print(f"⚠️ DB not ready (attempt {attempt+1}/{max_retries}), retrying in {wait}s... {e}")
+                time.sleep(wait)
+            else:
+                print(f"❌ WARNING: Could not seed DB after {max_retries} attempts: {e}")
 
 
 @app.get("/health")
@@ -4341,6 +4265,32 @@ def healthcheck():
     }
 
 
+@app.post("/admin/force-seed")
+def force_seed(token: str = Query(...)):
+    """Endpoint temporal para forzar el seed desde Render free tier (sin Shell).
+    Llamar con: POST /admin/force-seed?token=360seed2025
+    Eliminar este endpoint después de confirmar que los datos están cargados.
+    """
+    if token != "360seed2025":
+        raise HTTPException(status_code=403, detail="Token inválido.")
+    try:
+        init_sql_path = resolve_init_sql_path()
+        if not init_sql_path:
+            raise HTTPException(status_code=500, detail="No se encontró init.sql")
+        script = init_sql_path.read_text(encoding="utf-8")
+        raw_connection = engine.raw_connection()
+        try:
+            cursor = raw_connection.cursor()
+            cursor.execute(script)
+            raw_connection.commit()
+        finally:
+            raw_connection.close()
+        BOOTSTRAP_STATE["status"] = "ready"
+        return {"status": "ok", "detail": "Seed ejecutado correctamente. Puedes eliminar este endpoint."}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error en seed: {str(exc)[:500]}")
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 @app.post("/auth/login", response_model=TokenResponse)
 def login(
@@ -4352,11 +4302,7 @@ def login(
     if BOOTSTRAP_STATE["status"] == "error":
         raise HTTPException(
             status_code=503,
-            detail=(
-                f"El sistema aún no termina de inicializarse: {BOOTSTRAP_STATE['error']}"
-                if BOOTSTRAP_STATE["error"]
-                else "La base de datos aún se está inicializando. Intenta iniciar sesión de nuevo en unos segundos."
-            ),
+            detail=f"El sistema aún no termina de inicializarse: {BOOTSTRAP_STATE['error']}",
         )
     try:
         user = db.query(Usuario).filter(Usuario.username == form_data.username).first()
