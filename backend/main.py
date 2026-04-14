@@ -4269,20 +4269,14 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
-    import time
-    max_retries = 10
-    for attempt in range(max_retries):
-        try:
-            ensure_minimal_demo_users()
-            print("✅ Demo users seeded successfully.")
-            break
-        except Exception as e:
-            if attempt < max_retries - 1:
-                wait = 5 * (attempt + 1)
-                print(f"⚠️ DB not ready (attempt {attempt+1}/{max_retries}), retrying in {wait}s... {e}")
-                time.sleep(wait)
-            else:
-                print(f"❌ WARNING: Could not seed DB after {max_retries} attempts: {e}")
+    # ✅ bootstrap_runtime() en background thread:
+    #   1. wait_for_database() — espera Postgres
+    #   2. seed_database_from_init_sql_if_empty() — datos iniciales
+    #   3. ensure_runtime_schema() — crea tablas extras (omnichannel_settings, etc.)
+    #   4. BOOTSTRAP_STATE["status"] = "ready" — desbloquea login y rutas
+    # Thread daemon: no bloquea el event loop → Uvicorn bindea puerto de inmediato
+    import threading
+    threading.Thread(target=bootstrap_runtime, daemon=True).start()
 
 
 @app.get("/health")
