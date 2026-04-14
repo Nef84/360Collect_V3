@@ -1554,6 +1554,37 @@ def get_supervisors(db: Session) -> list[Usuario]:
 
 
 def get_explicit_collectors_for_supervisor(db: Session, supervisor_id: int) -> list[Usuario]:
+    # Safety net for Supabase/Render: ensure table exists before querying.
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS supervisor_assignments (
+                    id SERIAL PRIMARY KEY,
+                    supervisor_id INTEGER NOT NULL REFERENCES usuarios(id),
+                    collector_id INTEGER NOT NULL REFERENCES usuarios(id),
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(supervisor_id, collector_id)
+                );
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS ix_supervisor_assignments_supervisor_id
+                ON supervisor_assignments(supervisor_id);
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS ix_supervisor_assignments_collector_id
+                ON supervisor_assignments(collector_id);
+                """
+            )
+        )
     rows = db.execute(
         text(
             """
