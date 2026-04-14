@@ -2582,7 +2582,23 @@ function SupervisorWorkspace({ auth, overview, systemClients, onSearchSystemClie
   }, [overview]);
 
   if (!overview) {
-    return <p className="p-8 text-sm text-slate-500">Cargando equipo supervisado...</p>;
+    return (
+      <div className="p-8">
+        <p className="text-sm text-slate-500">Cargando equipo supervisado...</p>
+        {error ? (
+          <div className="mt-4 rounded-2xl bg-orange-50 px-4 py-3 text-sm text-orange-700">
+            {error}
+            <button
+              type="button"
+              onClick={onRefresh}
+              className="ml-3 rounded-full bg-white px-3 py-1 text-xs font-semibold text-ink"
+            >
+              Reintentar
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
   }
 
   const reviewQueue = overview.review_queue || [];
@@ -5429,6 +5445,19 @@ export default function App() {
     return data;
   };
 
+  const waitForApi = async (attempts = 5, delayMs = 1200) => {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        const response = await fetch(`${API_URL}/health`);
+        if (response.ok) return true;
+      } catch (err) {
+        // ignore while warming up
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    return false;
+  };
+
   const loadData = async (token, role) => {
     setError("");
     try {
@@ -5465,6 +5494,7 @@ export default function App() {
       }
 
       if (role === "Supervisor") {
+        await waitForApi();
         const overview = await apiFetch("/supervisor/overview/me", token);
         setSupervisorOverview(overview);
         setClients([]);
@@ -5575,7 +5605,11 @@ export default function App() {
       setPrediction(null);
       setSuccess("");
     } catch (loginError) {
-      setError(loginError.message);
+      if (String(loginError.message || "").toLowerCase().includes("fetch")) {
+        setError("La API está despertando. Intenta iniciar sesión en unos segundos.");
+      } else {
+        setError(loginError.message);
+      }
     } finally {
       setLoading(false);
     }

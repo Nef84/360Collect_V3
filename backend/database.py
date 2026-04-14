@@ -15,7 +15,7 @@ ENGINE_CONNECT_ARGS = {
     "keepalives_interval": 10,
     "keepalives_count": 5,
 }
-if ".render.com" in _db_url:
+if ".render.com" in _db_url or "supabase.co" in _db_url:
     ENGINE_CONNECT_ARGS["sslmode"] = "require"
 
 engine = create_engine(
