@@ -1554,37 +1554,6 @@ def get_supervisors(db: Session) -> list[Usuario]:
 
 
 def get_explicit_collectors_for_supervisor(db: Session, supervisor_id: int) -> list[Usuario]:
-    # Safety net for Supabase/Render: ensure table exists before querying.
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                CREATE TABLE IF NOT EXISTS supervisor_assignments (
-                    id SERIAL PRIMARY KEY,
-                    supervisor_id INTEGER NOT NULL REFERENCES usuarios(id),
-                    collector_id INTEGER NOT NULL REFERENCES usuarios(id),
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(supervisor_id, collector_id)
-                );
-                """
-            )
-        )
-        connection.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS ix_supervisor_assignments_supervisor_id
-                ON supervisor_assignments(supervisor_id);
-                """
-            )
-        )
-        connection.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS ix_supervisor_assignments_collector_id
-                ON supervisor_assignments(collector_id);
-                """
-            )
-        )
     rows = db.execute(
         text(
             """
@@ -4269,12 +4238,6 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
-    # ✅ bootstrap_runtime() en background thread:
-    #   1. wait_for_database() — espera Postgres
-    #   2. seed_database_from_init_sql_if_empty() — datos iniciales
-    #   3. ensure_runtime_schema() — crea tablas extras (omnichannel_settings, etc.)
-    #   4. BOOTSTRAP_STATE["status"] = "ready" — desbloquea login y rutas
-    # Thread daemon: no bloquea el event loop → Uvicorn bindea puerto de inmediato
     import threading
     threading.Thread(target=bootstrap_runtime, daemon=True).start()
 
@@ -5170,35 +5133,122 @@ def get_supervisor_overview(
     today = datetime.utcnow().date()
     start_of_day = get_start_of_day(today)
     assigned_collectors = get_collectors_for_supervisor(db, current_user)
-    collector_metrics: list[SupervisorCollectorMetric] = []
 
+    if not assigned_collectors:
+        return SupervisorOverviewResponse(
+            supervisor=UserRead.model_validate(current_user),
+            team_size=0,
+            managed_today=0,
+            payment_agreements_today=0,
+            recovered_balance_today=0.0,
+            collectors=[],
+            review_queue=[],
+            alerts=[],
+        )
+
+    collector_ids = [c.id for c in assigned_collectors]
+    collector_by_id = {c.id: c for c in assigned_collectors}
+
+    # ── Batch query 1: assigned client counts per collector ──────────────────
+    # Count active worklist assignments grouped by usuario_id in one shot
+    worklist_counts_rows = (
+        db.query(WorklistAssignment.usuario_id, func.count(WorklistAssignment.id).label("cnt"))
+        .filter(
+            WorklistAssignment.usuario_id.in_(collector_ids),
+            WorklistAssignment.activa.is_(True),
+        )
+        .group_by(WorklistAssignment.usuario_id)
+        .all()
+    )
+    worklist_count_by_collector: dict[int, int] = {row.usuario_id: row.cnt for row in worklist_counts_rows}
+
+    # For collectors without explicit assignments fall back to proportional count
+    # (get total clients and number of collectors, compute share per collector)
+    collectors_without_explicit = [cid for cid in collector_ids if cid not in worklist_count_by_collector]
+    if collectors_without_explicit:
+        all_collectors_count = db.query(func.count(Usuario.id)).filter(
+            Usuario.rol == "Collector", Usuario.activo.is_(True)
+        ).scalar() or 1
+        total_clients_count = db.query(func.count(Cliente.id)).scalar() or 0
+        fallback_count = round(total_clients_count / all_collectors_count)
+        for cid in collectors_without_explicit:
+            worklist_count_by_collector[cid] = fallback_count
+
+    # ── Batch query 2: distinct clients worked today per collector ────────────
+    history_rows = (
+        db.query(History.usuario_id, History.entidad_id)
+        .filter(
+            History.usuario_id.in_(collector_ids),
+            History.entidad == "clientes",
+            History.created_at >= start_of_day,
+            History.accion.in_(["GESTION_REGISTRADA", "PROMESA_CREADA", "CLIENTE_ACTUALIZADO"]),
+        )
+        .distinct()
+        .all()
+    )
+    managed_today_by_collector: dict[int, int] = {}
+    for row in history_rows:
+        managed_today_by_collector[row.usuario_id] = managed_today_by_collector.get(row.usuario_id, 0) + 1
+
+    # ── Batch query 3: all promises created today for the whole team ──────────
+    promises_today = (
+        db.query(Promesa)
+        .filter(
+            Promesa.usuario_id.in_(collector_ids),
+            Promesa.created_at >= start_of_day,
+        )
+        .all()
+    )
+    # Group by collector
+    agreements_by_collector: dict[int, list[Promesa]] = {cid: [] for cid in collector_ids}
+    for p in promises_today:
+        if p.usuario_id in agreements_by_collector:
+            agreements_by_collector[p.usuario_id].append(p)
+
+    # Review promises (subset of today's promises with estado REVISION_SUPERVISOR)
+    review_promises_all = [p for p in promises_today if p.estado == "REVISION_SUPERVISOR"]
+
+    # ── Batch query 4: open promises (PENDIENTE / REVISION_SUPERVISOR) ────────
+    open_promises = (
+        db.query(Promesa)
+        .filter(
+            Promesa.usuario_id.in_(collector_ids),
+            Promesa.estado.in_(["PENDIENTE", "REVISION_SUPERVISOR"]),
+        )
+        .all()
+    )
+    # Only keep alerts with fecha_promesa > 10 days from today
+    alert_promises = [p for p in open_promises if (p.fecha_promesa - today).days > 10]
+
+    # ── Batch query 5: fetch all accounts needed in one query ─────────────────
+    needed_account_ids = {p.cuenta_id for p in review_promises_all} | {p.cuenta_id for p in alert_promises}
+    accounts_map: dict[int, Cuenta] = {}
+    if needed_account_ids:
+        accounts_map = {
+            a.id: a
+            for a in db.query(Cuenta).filter(Cuenta.id.in_(needed_account_ids)).all()
+        }
+
+    # ── Batch query 6: fetch all clients needed in one query ─────────────────
+    needed_client_ids = {a.cliente_id for a in accounts_map.values()}
+    clients_map: dict[int, Cliente] = {}
+    if needed_client_ids:
+        clients_map = {
+            c.id: c
+            for c in db.query(Cliente).filter(Cliente.id.in_(needed_client_ids)).all()
+        }
+
+    # ── Assemble collector metrics ────────────────────────────────────────────
+    collector_metrics: list[SupervisorCollectorMetric] = []
     total_managed_today = 0
     total_payment_agreements = 0
     total_recovered_balance = 0.0
-    review_queue: list[dict] = []
-    alerts: list[dict] = []
 
     for collector in assigned_collectors:
-        assigned_clients = get_assigned_clients_for_collector(db, collector)
-        histories = (
-            db.query(History)
-            .filter(
-                History.usuario_id == collector.id,
-                History.entidad == "clientes",
-                History.created_at >= start_of_day,
-                History.accion.in_(["GESTION_REGISTRADA", "PROMESA_CREADA", "CLIENTE_ACTUALIZADO"]),
-            )
-            .all()
-        )
-        managed_today = len({item.entidad_id for item in histories})
-        agreements_today = (
-            db.query(Promesa)
-            .filter(Promesa.usuario_id == collector.id, Promesa.created_at >= start_of_day)
-            .all()
-        )
-        collector_promises = db.query(Promesa).filter(Promesa.usuario_id == collector.id, Promesa.estado.in_(["PENDIENTE", "REVISION_SUPERVISOR"])).all()
-        review_promises = [item for item in agreements_today if item.estado == "REVISION_SUPERVISOR"]
-        recovered_balance_today = round(sum(float(item.monto_prometido or 0) for item in agreements_today), 2)
+        cid = collector.id
+        agreements_today = agreements_by_collector.get(cid, [])
+        managed_today = managed_today_by_collector.get(cid, 0)
+        recovered_balance_today = round(sum(float(p.monto_prometido or 0) for p in agreements_today), 2)
 
         total_managed_today += managed_today
         total_payment_agreements += len(agreements_today)
@@ -5207,54 +5257,62 @@ def get_supervisor_overview(
         collector_metrics.append(
             SupervisorCollectorMetric(
                 user=UserRead.model_validate(collector),
-                assigned_clients=len(assigned_clients),
+                assigned_clients=worklist_count_by_collector.get(cid, 0),
                 managed_today=managed_today,
                 payment_agreements_today=len(agreements_today),
                 recovered_balance_today=recovered_balance_today,
             )
         )
 
-        for promise in review_promises:
-            account = db.get(Cuenta, promise.cuenta_id)
-            if not account:
-                continue
-            client = db.get(Cliente, account.cliente_id)
-            if not client:
-                continue
-            review_queue.append(
-                {
-                    "promise_id": promise.id,
-                    "collector_name": collector.nombre,
-                    "collector_username": collector.username,
-                    "client_id": client.id,
-                    "client_name": f"{client.nombres} {client.apellidos}",
-                    "account_number": account.numero_cuenta,
-                    "scheduled_date": promise.fecha_promesa.isoformat(),
-                    "agreed_amount": float(promise.monto_prometido),
-                    "minimum_amount": calculate_minimum_payment(account),
-                }
-            )
+    # ── Assemble review queue (uses pre-fetched accounts & clients) ───────────
+    review_queue: list[dict] = []
+    for promise in review_promises_all:
+        account = accounts_map.get(promise.cuenta_id)
+        if not account:
+            continue
+        client = clients_map.get(account.cliente_id)
+        if not client:
+            continue
+        collector = collector_by_id.get(promise.usuario_id)
+        if not collector:
+            continue
+        review_queue.append(
+            {
+                "promise_id": promise.id,
+                "collector_name": collector.nombre,
+                "collector_username": collector.username,
+                "client_id": client.id,
+                "client_name": f"{client.nombres} {client.apellidos}",
+                "account_number": account.numero_cuenta,
+                "scheduled_date": promise.fecha_promesa.isoformat(),
+                "agreed_amount": float(promise.monto_prometido),
+                "minimum_amount": calculate_minimum_payment(account),
+            }
+        )
 
-        for promise in collector_promises:
-            if (promise.fecha_promesa - today).days <= 10:
-                continue
-            account = db.get(Cuenta, promise.cuenta_id)
-            if not account:
-                continue
-            client = db.get(Cliente, account.cliente_id)
-            if not client:
-                continue
-            alerts.append(
-                {
-                    "promise_id": promise.id,
-                    "collector_name": collector.nombre,
-                    "client_name": f"{client.nombres} {client.apellidos}",
-                    "account_number": account.numero_cuenta,
-                    "scheduled_date": promise.fecha_promesa.isoformat(),
-                    "days_out": (promise.fecha_promesa - today).days,
-                    "status": promise.estado,
-                }
-            )
+    # ── Assemble alerts (uses pre-fetched accounts & clients) ─────────────────
+    alerts: list[dict] = []
+    for promise in alert_promises:
+        account = accounts_map.get(promise.cuenta_id)
+        if not account:
+            continue
+        client = clients_map.get(account.cliente_id)
+        if not client:
+            continue
+        collector = collector_by_id.get(promise.usuario_id)
+        if not collector:
+            continue
+        alerts.append(
+            {
+                "promise_id": promise.id,
+                "collector_name": collector.nombre,
+                "client_name": f"{client.nombres} {client.apellidos}",
+                "account_number": account.numero_cuenta,
+                "scheduled_date": promise.fecha_promesa.isoformat(),
+                "days_out": (promise.fecha_promesa - today).days,
+                "status": promise.estado,
+            }
+        )
 
     return SupervisorOverviewResponse(
         supervisor=UserRead.model_validate(current_user),
